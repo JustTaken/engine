@@ -1,12 +1,13 @@
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals, unused_imports)]
 
+use crate::binding::wayland;
+
 pub const STRUCTURE_TYPE_APPLICATION_INFO: u32 = 0;
 pub const STRUCTURE_TYPE_INSTANCE_CREATE_INFO: u32 = 1;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct ApplicationInfo {
-    pub s_type: u32,
+    pub sType: u32,
     pub pNext: *const ::std::os::raw::c_void,
     pub pApplicationName: *const ::std::os::raw::c_char,
     pub applicationVersion: u32,
@@ -16,18 +17,25 @@ pub struct ApplicationInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct AllocationCallbacks {
-    pub pUserData: *mut ::std::os::raw::c_void,
-    pub pfnAllocation: PfnAllocationFunction,
-    pub pfnReallocation: PfnReallocationFunction,
-    pub pfnFree: PfnFreeFunction,
-    pub pfnInternalAllocation: PfnInternalAllocationNotification,
-    pub pfnInternalFree: PfnInternalFreeNotification,
+pub struct WaylandSurfaceCreateInfo {
+    pub sType: u32,
+    pub pNext: *const std::os::raw::c_void,
+    pub flags: u32,
+    pub display: *const wayland::wl_display,
+    pub surface: *const wayland::wl_surface,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+pub struct AllocationCallbacks {
+    pub pUserData: *mut ::std::os::raw::c_void,
+    pub pfnAllocation: PFN_vkAllocationFunction,
+    pub pfnReallocation: PFN_vkReallocationFunction,
+    pub pfnFree: PFN_vkFreeFunction,
+    pub pfnInternalAllocation: PFN_vkInternalAllocationNotification,
+    pub pfnInternalFree: PFN_vkInternalFreeNotification,
+}
+
+#[repr(C)]
 pub struct InstanceCreateInfo {
     pub sType: u32,
     pub pNext: *const ::std::os::raw::c_void,
@@ -40,7 +48,6 @@ pub struct InstanceCreateInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct DeviceCreateInfo {
     pub sType: u32,
     pub pNext: *const ::std::os::raw::c_void,
@@ -55,7 +62,11 @@ pub struct DeviceCreateInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+pub struct Surface {
+    _unused: [u8; 0],
+}
+
+#[repr(C)]
 pub struct PhysicalDeviceFeatures {
     pub robustBufferAccess: u32,
     pub fullDrawIndexUint32: u32,
@@ -115,7 +126,6 @@ pub struct PhysicalDeviceFeatures {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct DeviceQueueCreateInfo {
     pub sType: u32,
     pub pNext: *const ::std::os::raw::c_void,
@@ -126,25 +136,22 @@ pub struct DeviceQueueCreateInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct Instance {
     _unused: [u8; 0],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct PhysicalDevice {
     _unused: [u8; 0],
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
 pub struct Device {
     _unused: [u8; 0],
 }
 
-pub type PfnVoidFunction = ::std::option::Option<unsafe extern "C" fn()>;
+pub type PFN_vkVoidFunction = ::std::option::Option<unsafe extern "C" fn()>;
 
-pub type PfnReallocationFunction = ::std::option::Option<
+pub type PFN_vkReallocationFunction = ::std::option::Option<
     unsafe extern "C" fn(
         pUserData: *mut ::std::os::raw::c_void,
         pOriginal: *mut ::std::os::raw::c_void,
@@ -153,8 +160,7 @@ pub type PfnReallocationFunction = ::std::option::Option<
         allocationScope: u32,
     ) -> *mut ::std::os::raw::c_void,
 >;
-
-pub type PfnAllocationFunction = ::std::option::Option<
+pub type PFN_vkAllocationFunction = ::std::option::Option<
     unsafe extern "C" fn(
         pUserData: *mut ::std::os::raw::c_void,
         size: usize,
@@ -162,15 +168,13 @@ pub type PfnAllocationFunction = ::std::option::Option<
         allocationScope: u32,
     ) -> *mut ::std::os::raw::c_void,
 >;
-
-pub type PfnFreeFunction = ::std::option::Option<
+pub type PFN_vkFreeFunction = ::std::option::Option<
     unsafe extern "C" fn(
         pUserData: *mut ::std::os::raw::c_void,
         pMemory: *mut ::std::os::raw::c_void,
     ),
 >;
-
-pub type PfnInternalFreeNotification = ::std::option::Option<
+pub type PFN_vkInternalFreeNotification = ::std::option::Option<
     unsafe extern "C" fn(
         pUserData: *mut ::std::os::raw::c_void,
         size: usize,
@@ -178,8 +182,7 @@ pub type PfnInternalFreeNotification = ::std::option::Option<
         allocationScope: u32,
     ),
 >;
-
-pub type PfnInternalAllocationNotification = ::std::option::Option<
+pub type PFN_vkInternalAllocationNotification = ::std::option::Option<
     unsafe extern "C" fn(
         pUserData: *mut ::std::os::raw::c_void,
         size: usize,
@@ -187,20 +190,19 @@ pub type PfnInternalAllocationNotification = ::std::option::Option<
         allocationScope: u32,
     ),
 >;
-
-pub type PfnGetInstanceProcAddr = ::std::option::Option<
+pub type PFN_vkGetInstanceProcAddr = ::std::option::Option<
     unsafe extern "C" fn(
         instance: *mut Instance,
         pName: *const ::std::os::raw::c_char,
-    ) -> PfnVoidFunction,
+    ) -> PFN_vkVoidFunction,
 >;
-pub type PfnGetDeviceProcAddr = ::std::option::Option<
+pub type PFN_vkGetDeviceProcAddr = ::std::option::Option<
     unsafe extern "C" fn(
         device: *mut Device,
         pName: *const ::std::os::raw::c_char,
-    ) -> PfnVoidFunction,
+    ) -> PFN_vkVoidFunction,
 >;
-pub type PfnCreateDevice = ::std::option::Option<
+pub type PFN_vkCreateDevice = ::std::option::Option<
     unsafe extern "C" fn(
         physicalDevice: *mut PhysicalDevice,
         pCreateInfo: *const DeviceCreateInfo,
@@ -208,16 +210,24 @@ pub type PfnCreateDevice = ::std::option::Option<
         pDevice: *mut Device,
     ) -> u32,
 >;
-pub type PfnCreateInstance = ::std::option::Option<
+pub type PFN_vkCreateInstance = ::std::option::Option<
     unsafe extern "C" fn(
         pCreateInfo: *const InstanceCreateInfo,
         pAllocator: *const AllocationCallbacks,
         pInstance: *mut Instance,
     ) -> u32,
 >;
-pub type PfnDestroyInstance = ::std::option::Option<
+pub type PFN_vkDestroyInstance = ::std::option::Option<
     unsafe extern "C" fn(
         instance: *mut Instance,
         pAllocator: *const AllocationCallbacks
+    ),
+>;
+pub type PFN_vkCreateWaylandSurfaceKHR = ::std::option::Option<
+    unsafe extern "C" fn(
+        instance: *mut Instance,
+        pCreateInfo: *const WaylandSurfaceCreateInfo,
+        pAllocator: *const AllocationCallbacks,
+        pSurface: *mut Surface,
     ),
 >;

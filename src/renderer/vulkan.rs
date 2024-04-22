@@ -5,6 +5,7 @@ use crate::binding::vulkan;
 pub enum LoadError {
     NoLibVulkan,
     NoFunction,
+    InstanceFailed,
 }
 
 macro_rules! load_function {
@@ -39,7 +40,7 @@ macro_rules! instance_function {
         unsafe {
             let string = std::ffi::CString::new(&stringify!($name)[4..]).unwrap();
             let pointer = $proc($instance, string.as_ptr());
-            let func = std::mem::transmute::<vulkan::PfnVoidFunction, vulkan::$name>(pointer);
+            let func = std::mem::transmute::<vulkan::PFN_vkVoidFunction, vulkan::$name>(pointer);
 
             if let Some(f) = func {
                 Ok(f)
@@ -63,7 +64,7 @@ pub fn test() -> Result<(), LoadError> {
     let engine_name = std::ffi::CString::new("Hello triangle").unwrap();
 
     let app_info = vulkan::ApplicationInfo {
-        s_type: vulkan::STRUCTURE_TYPE_APPLICATION_INFO,
+        sType: vulkan::STRUCTURE_TYPE_APPLICATION_INFO,
         pApplicationName: api_name.as_ptr(),
         pEngineName: engine_name.as_ptr(),
         applicationVersion: make_version(1, 3),
@@ -84,14 +85,14 @@ pub fn test() -> Result<(), LoadError> {
     };
 
     let null = std::ptr::null_mut();
-    let vk_get_instance_proc_addr = load_function!(library, PfnGetInstanceProcAddr)?;
-    let vk_create_instance = instance_function!(vk_get_instance_proc_addr, null, PfnCreateInstance)?;
+    let vk_get_instance_proc_addr = load_function!(library, PFN_vkGetInstanceProcAddr)?;
+    let vk_create_instance = instance_function!(vk_get_instance_proc_addr, null, PFN_vkCreateInstance)?;
 
     let instance: *mut vulkan::Instance = std::ptr::null_mut();
 
-    let a = unsafe { vk_create_instance(&create_info as *const vulkan::InstanceCreateInfo, std::ptr::null(), instance) };
-
-    println!("{:?}", a);
+    if 0 != unsafe { vk_create_instance(&create_info as *const vulkan::InstanceCreateInfo, std::ptr::null(), instance) } {
+        return Err(LoadError::InstanceFailed);
+    }
 
     Ok(())
 }
