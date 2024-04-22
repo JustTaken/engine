@@ -1,0 +1,4 @@
+/target
+/outputs
+/.direnv
+Cargo.lock
