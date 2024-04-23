@@ -2,16 +2,19 @@
 
 use crate::binding::wayland;
 
+use std::ffi::c_void as void;
+
 pub const STRUCTURE_TYPE_APPLICATION_INFO: u32 = 0;
 pub const STRUCTURE_TYPE_INSTANCE_CREATE_INFO: u32 = 1;
+pub const STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR: u32 = 1000006000;
 
 #[repr(C)]
 pub struct ApplicationInfo {
     pub sType: u32,
-    pub pNext: *const ::std::os::raw::c_void,
-    pub pApplicationName: *const ::std::os::raw::c_char,
+    pub pNext: *const void,
+    pub pApplicationName: *const i8,
     pub applicationVersion: u32,
-    pub pEngineName: *const ::std::os::raw::c_char,
+    pub pEngineName: *const i8,
     pub engineVersion: u32,
     pub apiVersion: u32,
 }
@@ -19,7 +22,7 @@ pub struct ApplicationInfo {
 #[repr(C)]
 pub struct WaylandSurfaceCreateInfo {
     pub sType: u32,
-    pub pNext: *const std::os::raw::c_void,
+    pub pNext: *const void,
     pub flags: u32,
     pub display: *const wayland::wl_display,
     pub surface: *const wayland::wl_surface,
@@ -27,7 +30,7 @@ pub struct WaylandSurfaceCreateInfo {
 
 #[repr(C)]
 pub struct AllocationCallbacks {
-    pub pUserData: *mut ::std::os::raw::c_void,
+    pub pUserData: *mut void,
     pub pfnAllocation: PFN_vkAllocationFunction,
     pub pfnReallocation: PFN_vkReallocationFunction,
     pub pfnFree: PFN_vkFreeFunction,
@@ -38,26 +41,26 @@ pub struct AllocationCallbacks {
 #[repr(C)]
 pub struct InstanceCreateInfo {
     pub sType: u32,
-    pub pNext: *const ::std::os::raw::c_void,
+    pub pNext: *const void,
     pub flags: u32,
     pub pApplicationInfo: *const ApplicationInfo,
     pub enabledLayerCount: u32,
-    pub ppEnabledLayerNames: *const *const ::std::os::raw::c_char,
+    pub ppEnabledLayerNames: *const *const i8,
     pub enabledExtensionCount: u32,
-    pub ppEnabledExtensionNames: *const *const ::std::os::raw::c_char,
+    pub ppEnabledExtensionNames: *const *const i8,
 }
 
 #[repr(C)]
 pub struct DeviceCreateInfo {
     pub sType: u32,
-    pub pNext: *const ::std::os::raw::c_void,
+    pub pNext: *const void,
     pub flags: u32,
     pub queueCreateInfoCount: u32,
     pub pQueueCreateInfos: *const DeviceQueueCreateInfo,
     pub enabledLayerCount: u32,
-    pub ppEnabledLayerNames: *const *const ::std::os::raw::c_char,
+    pub ppEnabledLayerNames: *const *const i8,
     pub enabledExtensionCount: u32,
-    pub ppEnabledExtensionNames: *const *const ::std::os::raw::c_char,
+    pub ppEnabledExtensionNames: *const *const i8,
     pub pEnabledFeatures: *const PhysicalDeviceFeatures,
 }
 
@@ -128,7 +131,7 @@ pub struct PhysicalDeviceFeatures {
 #[repr(C)]
 pub struct DeviceQueueCreateInfo {
     pub sType: u32,
-    pub pNext: *const ::std::os::raw::c_void,
+    pub pNext: *const void,
     pub flags: u32,
     pub queueFamilyIndex: u32,
     pub queueCount: u32,
@@ -149,60 +152,60 @@ pub struct Device {
     _unused: [u8; 0],
 }
 
-pub type PFN_vkVoidFunction = ::std::option::Option<unsafe extern "C" fn()>;
+pub type PFN_vkVoidFunction = Option<unsafe extern "C" fn()>;
 
-pub type PFN_vkReallocationFunction = ::std::option::Option<
+pub type PFN_vkReallocationFunction = Option<
     unsafe extern "C" fn(
-        pUserData: *mut ::std::os::raw::c_void,
-        pOriginal: *mut ::std::os::raw::c_void,
+        pUserData: *mut void,
+        pOriginal: *mut void,
         size: usize,
         alignment: usize,
         allocationScope: u32,
-    ) -> *mut ::std::os::raw::c_void,
+    ) -> *mut void,
 >;
-pub type PFN_vkAllocationFunction = ::std::option::Option<
+pub type PFN_vkAllocationFunction = Option<
     unsafe extern "C" fn(
-        pUserData: *mut ::std::os::raw::c_void,
+        pUserData: *mut void,
         size: usize,
         alignment: usize,
         allocationScope: u32,
-    ) -> *mut ::std::os::raw::c_void,
+    ) -> *mut void,
 >;
-pub type PFN_vkFreeFunction = ::std::option::Option<
+pub type PFN_vkFreeFunction = Option<
     unsafe extern "C" fn(
-        pUserData: *mut ::std::os::raw::c_void,
-        pMemory: *mut ::std::os::raw::c_void,
+        pUserData: *mut void,
+        pMemory: *mut void,
     ),
 >;
-pub type PFN_vkInternalFreeNotification = ::std::option::Option<
+pub type PFN_vkInternalFreeNotification = Option<
     unsafe extern "C" fn(
-        pUserData: *mut ::std::os::raw::c_void,
+        pUserData: *mut void,
         size: usize,
         allocationType: u32,
         allocationScope: u32,
     ),
 >;
-pub type PFN_vkInternalAllocationNotification = ::std::option::Option<
+pub type PFN_vkInternalAllocationNotification = Option<
     unsafe extern "C" fn(
-        pUserData: *mut ::std::os::raw::c_void,
+        pUserData: *mut void,
         size: usize,
         allocationType: u32,
         allocationScope: u32,
     ),
 >;
-pub type PFN_vkGetInstanceProcAddr = ::std::option::Option<
+pub type PFN_vkGetInstanceProcAddr = Option<
     unsafe extern "C" fn(
         instance: *mut Instance,
-        pName: *const ::std::os::raw::c_char,
+        pName: *const i8,
     ) -> PFN_vkVoidFunction,
 >;
-pub type PFN_vkGetDeviceProcAddr = ::std::option::Option<
+pub type PFN_vkGetDeviceProcAddr = Option<
     unsafe extern "C" fn(
         device: *mut Device,
-        pName: *const ::std::os::raw::c_char,
+        pName: *const i8,
     ) -> PFN_vkVoidFunction,
 >;
-pub type PFN_vkCreateDevice = ::std::option::Option<
+pub type PFN_vkCreateDevice = Option<
     unsafe extern "C" fn(
         physicalDevice: *mut PhysicalDevice,
         pCreateInfo: *const DeviceCreateInfo,
@@ -210,24 +213,24 @@ pub type PFN_vkCreateDevice = ::std::option::Option<
         pDevice: *mut Device,
     ) -> u32,
 >;
-pub type PFN_vkCreateInstance = ::std::option::Option<
+pub type PFN_vkCreateInstance = Option<
     unsafe extern "C" fn(
         pCreateInfo: *const InstanceCreateInfo,
         pAllocator: *const AllocationCallbacks,
-        pInstance: *mut Instance,
+        pInstance: *mut *mut Instance,
     ) -> u32,
 >;
-pub type PFN_vkDestroyInstance = ::std::option::Option<
+pub type PFN_vkDestroyInstance = Option<
     unsafe extern "C" fn(
         instance: *mut Instance,
         pAllocator: *const AllocationCallbacks
     ),
 >;
-pub type PFN_vkCreateWaylandSurfaceKHR = ::std::option::Option<
+pub type PFN_vkCreateWaylandSurfaceKHR = Option<
     unsafe extern "C" fn(
         instance: *mut Instance,
         pCreateInfo: *const WaylandSurfaceCreateInfo,
         pAllocator: *const AllocationCallbacks,
-        pSurface: *mut Surface,
-    ),
+        pSurface: *mut *mut Surface,
+    ) -> u32,
 >;

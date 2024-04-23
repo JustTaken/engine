@@ -1,10 +1,10 @@
 use crate::binding::wayland;
 
-#[derive(Debug)]
-struct Core {
-    display: *mut wayland::wl_display,
+pub struct Core {
+    pub display: *mut wayland::wl_display,
+    pub surface: *mut wayland::wl_surface,
+    pub extensions: [*const std::ffi::c_char; 2],
     registry: *mut wayland::wl_registry,
-    surface: *mut wayland::wl_surface,
     compositor: *mut wayland::wl_compositor,
     seat: *mut wayland::wl_seat,
     xdg_shell: *mut wayland::xdg_wm_base,
@@ -89,7 +89,7 @@ unsafe extern "C" fn global_listener(data: *mut std::ffi::c_void, wl_registry: *
     }
 }
 
-pub fn display(name: &str, width: u32, height: u32) -> Result<(), WaylandError> {
+pub fn display(name: &str, width: u32, height: u32) -> Result<Core, WaylandError> {
     let mut core = Core {
         display: std::ptr::null_mut(),
         registry: std::ptr::null_mut(),
@@ -99,6 +99,10 @@ pub fn display(name: &str, width: u32, height: u32) -> Result<(), WaylandError> 
         xdg_shell: std::ptr::null_mut(),
         xdg_surface: std::ptr::null_mut(),
         xdg_toplevel: std::ptr::null_mut(),
+        extensions: [
+            std::ffi::CString::new("VK_KHR_surface").unwrap().into_raw(),
+            std::ffi::CString::new("VK_KHR_wayland_surface").unwrap().into_raw(),
+        ],
         width,
         height,
         running: true,
@@ -158,20 +162,18 @@ pub fn display(name: &str, width: u32, height: u32) -> Result<(), WaylandError> 
     unsafe { wayland::wl_proxy_marshal_flags(core.surface as *mut wayland::wl_proxy, wayland::WL_SURFACE_COMMIT, std::ptr::null(), wayland::wl_proxy_get_version(core.surface as *mut wayland::wl_proxy), 0) };
     unsafe { wayland::wl_display_roundtrip(core.display) };
 
-    unsafe { shutdown(&core) };
-
-    println!("{:?}", core);
-
-    Ok(())
+    Ok(core)
 }
 
-unsafe fn shutdown(core: &Core) {
-    wayland::wl_proxy_marshal_flags(core.seat as *mut wayland::wl_proxy, wayland::WL_SEAT_RELEASE, std::ptr::null(), wayland::wl_proxy_get_version(core.seat as *mut wayland::wl_proxy), wayland::WL_MARSHAL_FLAG_DESTROY);
-    wayland::wl_proxy_marshal_flags(core.xdg_toplevel as *mut wayland::wl_proxy, wayland::XDG_TOPLEVEL_DESTROY, std::ptr::null(), wayland::wl_proxy_get_version(core.xdg_toplevel as *mut wayland::wl_proxy), wayland::WL_MARSHAL_FLAG_DESTROY);
-    wayland::wl_proxy_marshal_flags(core.xdg_surface as *mut wayland::wl_proxy, wayland::XDG_SURFACE_DESTROY, std::ptr::null(), wayland::wl_proxy_get_version(core.xdg_surface as *mut wayland::wl_proxy), wayland::WL_MARSHAL_FLAG_DESTROY);
-    wayland::wl_proxy_marshal_flags(core.xdg_shell  as *mut wayland::wl_proxy, wayland::XDG_WM_BASE_DESTROY, std::ptr::null(), wayland::wl_proxy_get_version(core.xdg_shell as *mut wayland::wl_proxy), wayland::WL_MARSHAL_FLAG_DESTROY);
-    wayland::wl_proxy_destroy(core.surface as *mut wayland::wl_proxy);
-    wayland::wl_proxy_destroy(core.compositor as *mut wayland::wl_proxy);
-    wayland::wl_proxy_destroy(core.registry as *mut wayland::wl_proxy);
-    wayland::wl_display_disconnect(core.display);
+pub fn shutdown(core: &Core) {
+    unsafe {
+        wayland::wl_proxy_marshal_flags(core.seat as *mut wayland::wl_proxy, wayland::WL_SEAT_RELEASE, std::ptr::null(), wayland::wl_proxy_get_version(core.seat as *mut wayland::wl_proxy), wayland::WL_MARSHAL_FLAG_DESTROY);
+        wayland::wl_proxy_marshal_flags(core.xdg_toplevel as *mut wayland::wl_proxy, wayland::XDG_TOPLEVEL_DESTROY, std::ptr::null(), wayland::wl_proxy_get_version(core.xdg_toplevel as *mut wayland::wl_proxy), wayland::WL_MARSHAL_FLAG_DESTROY);
+        wayland::wl_proxy_marshal_flags(core.xdg_surface as *mut wayland::wl_proxy, wayland::XDG_SURFACE_DESTROY, std::ptr::null(), wayland::wl_proxy_get_version(core.xdg_surface as *mut wayland::wl_proxy), wayland::WL_MARSHAL_FLAG_DESTROY);
+        wayland::wl_proxy_marshal_flags(core.xdg_shell  as *mut wayland::wl_proxy, wayland::XDG_WM_BASE_DESTROY, std::ptr::null(), wayland::wl_proxy_get_version(core.xdg_shell as *mut wayland::wl_proxy), wayland::WL_MARSHAL_FLAG_DESTROY);
+        wayland::wl_proxy_destroy(core.surface as *mut wayland::wl_proxy);
+        wayland::wl_proxy_destroy(core.compositor as *mut wayland::wl_proxy);
+        wayland::wl_proxy_destroy(core.registry as *mut wayland::wl_proxy);
+        wayland::wl_display_disconnect(core.display);
+    };
 }
