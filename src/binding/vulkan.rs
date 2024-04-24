@@ -8,6 +8,10 @@ pub const STRUCTURE_TYPE_APPLICATION_INFO: u32 = 0;
 pub const STRUCTURE_TYPE_INSTANCE_CREATE_INFO: u32 = 1;
 pub const STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR: u32 = 1000006000;
 
+pub const QUEUE_GRAPHICS_BIT: u32 = 1;
+pub const QUEUE_COMPUTE_BIT: u32 = 2;
+pub const QUEUE_TRANSFER_BIT: u32 = 4;
+
 #[repr(C)]
 pub struct ApplicationInfo {
     pub sType: u32,
@@ -65,7 +69,7 @@ pub struct DeviceCreateInfo {
 }
 
 #[repr(C)]
-pub struct Surface {
+pub struct SurfaceKHR {
     _unused: [u8; 0],
 }
 
@@ -152,85 +156,200 @@ pub struct Device {
     _unused: [u8; 0],
 }
 
+#[repr(C)]
+#[derive(Debug)]
+pub struct ExtensionProperties {
+    pub extensionName: [std::os::raw::c_char; 256],
+    pub specVersion: u32,
+}
+
+#[repr(C)]
+pub struct VkMemoryType {
+    pub propertyFlags: u32,
+    pub heapIndex: u32,
+}
+
+#[repr(C)]
+pub struct VkMemoryHeap {
+    pub size: u64,
+    pub flags: u32,
+}
+
+#[repr(C)]
+pub struct PhysicalDeviceMemoryProperties {
+    pub memoryTypeCount: u32,
+    pub memoryTypes: [VkMemoryType; 32],
+    pub memoryHeapCount: u32,
+    pub memoryHeaps: [VkMemoryHeap; 16],
+}
+
+#[repr(C)]
+pub struct SurfaceFormatKHR {
+    pub format: u32,
+    pub colorSpace: u32,
+}
+
+#[repr(C)]
+pub struct Extent3D {
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+}
+
+#[repr(C)]
+pub struct QueueFamilyProperties {
+    pub queueFlags: u32,
+    pub queueCount: u32,
+    pub timestampValidBits: u32,
+    pub minImageTransferGranularity: Extent3D,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct Extent2D {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[repr(C)]
+pub struct SurfaceCapabilitiesKHR {
+    pub minImageCount: u32,
+    pub maxImageCount: u32,
+    pub currentExtent: Extent2D,
+    pub minImageExtent: Extent2D,
+    pub maxImageExtent: Extent2D,
+    pub maxImageArrayLayers: u32,
+    pub supportedTransforms: u32,
+    pub currentTransform: u32,
+    pub supportedCompositeAlpha: u32,
+    pub supportedUsageFlags: u32,
+}
+
 pub type PFN_vkVoidFunction = Option<unsafe extern "C" fn()>;
 
-pub type PFN_vkReallocationFunction = Option<
-    unsafe extern "C" fn(
-        pUserData: *mut void,
-        pOriginal: *mut void,
-        size: usize,
-        alignment: usize,
-        allocationScope: u32,
-    ) -> *mut void,
->;
-pub type PFN_vkAllocationFunction = Option<
-    unsafe extern "C" fn(
-        pUserData: *mut void,
-        size: usize,
-        alignment: usize,
-        allocationScope: u32,
-    ) -> *mut void,
->;
-pub type PFN_vkFreeFunction = Option<
-    unsafe extern "C" fn(
-        pUserData: *mut void,
-        pMemory: *mut void,
-    ),
->;
-pub type PFN_vkInternalFreeNotification = Option<
-    unsafe extern "C" fn(
-        pUserData: *mut void,
-        size: usize,
-        allocationType: u32,
-        allocationScope: u32,
-    ),
->;
-pub type PFN_vkInternalAllocationNotification = Option<
-    unsafe extern "C" fn(
-        pUserData: *mut void,
-        size: usize,
-        allocationType: u32,
-        allocationScope: u32,
-    ),
->;
-pub type PFN_vkGetInstanceProcAddr = Option<
-    unsafe extern "C" fn(
-        instance: *mut Instance,
-        pName: *const i8,
-    ) -> PFN_vkVoidFunction,
->;
-pub type PFN_vkGetDeviceProcAddr = Option<
-    unsafe extern "C" fn(
-        device: *mut Device,
-        pName: *const i8,
-    ) -> PFN_vkVoidFunction,
->;
-pub type PFN_vkCreateDevice = Option<
-    unsafe extern "C" fn(
-        physicalDevice: *mut PhysicalDevice,
-        pCreateInfo: *const DeviceCreateInfo,
-        pAllocator: *const AllocationCallbacks,
-        pDevice: *mut Device,
-    ) -> u32,
->;
-pub type PFN_vkCreateInstance = Option<
-    unsafe extern "C" fn(
-        pCreateInfo: *const InstanceCreateInfo,
-        pAllocator: *const AllocationCallbacks,
-        pInstance: *mut *mut Instance,
-    ) -> u32,
->;
-pub type PFN_vkDestroyInstance = Option<
-    unsafe extern "C" fn(
-        instance: *mut Instance,
-        pAllocator: *const AllocationCallbacks
-    ),
->;
-pub type PFN_vkCreateWaylandSurfaceKHR = Option<
-    unsafe extern "C" fn(
-        instance: *mut Instance,
-        pCreateInfo: *const WaylandSurfaceCreateInfo,
-        pAllocator: *const AllocationCallbacks,
-        pSurface: *mut *mut Surface,
-    ) -> u32,
->;
+pub type vkReallocationFunction = unsafe extern "C" fn(
+    pUserData: *mut void,
+    pOriginal: *mut void,
+    size: usize,
+    alignment: usize,
+    allocationScope: u32,
+) -> *mut void;
+pub type PFN_vkReallocationFunction = Option<vkReallocationFunction>;
+pub type vkAllocationFunction = unsafe extern "C" fn(
+    pUserData: *mut void,
+    size: usize,
+    alignment: usize,
+    allocationScope: u32,
+) -> *mut void;
+pub type PFN_vkAllocationFunction = Option<vkAllocationFunction>;
+pub type vkFreeFunction = unsafe extern "C" fn(
+    pUserData: *mut void,
+    pMemory: *mut void,
+);
+pub type PFN_vkFreeFunction = Option<vkFreeFunction>;
+pub type vkInternalFreeNotification = unsafe extern "C" fn(
+    pUserData: *mut void,
+    size: usize,
+    allocationType: u32,
+    allocationScope: u32,
+);
+pub type PFN_vkInternalFreeNotification = Option<vkInternalFreeNotification>;
+pub type vkInternalAllocationNotification = unsafe extern "C" fn(
+    pUserData: *mut void,
+    size: usize,
+    allocationType: u32,
+    allocationScope: u32,
+);
+pub type PFN_vkInternalAllocationNotification = Option<vkInternalAllocationNotification>;
+pub type vkGetInstanceProcAddr = unsafe extern "C" fn(
+    instance: *mut Instance,
+    pName: *const i8,
+) -> PFN_vkVoidFunction;
+pub type PFN_vkGetInstanceProcAddr = Option<vkGetInstanceProcAddr>;
+pub type vkGetDeviceProcAddr = unsafe extern "C" fn(
+    device: *mut Device,
+    pName: *const i8,
+) -> PFN_vkVoidFunction;
+pub type PFN_vkGetDeviceProcAddr = Option<vkGetDeviceProcAddr>;
+pub type vkCreateDevice = unsafe extern "C" fn(
+    physicalDevice: *mut PhysicalDevice,
+    pCreateInfo: *const DeviceCreateInfo,
+    pAllocator: *const AllocationCallbacks,
+    pDevice: *mut Device,
+) -> u32;
+pub type PFN_vkCreateDevice = Option<vkCreateDevice>;
+pub type vkCreateInstance = unsafe extern "C" fn(
+    pCreateInfo: *const InstanceCreateInfo,
+    pAllocator: *const AllocationCallbacks,
+    pInstance: *mut *mut Instance,
+) -> u32;
+pub type PFN_vkCreateInstance = Option<vkCreateInstance>;
+pub type vkDestroyInstance = unsafe extern "C" fn(
+    instance: *mut Instance,
+    pAllocator: *const AllocationCallbacks
+);
+pub type PFN_vkDestroyInstance = Option<vkDestroyInstance>;
+pub type vkDestroySurfaceKHR = unsafe extern "C" fn(
+    instance: *mut Instance,
+    surface: *mut SurfaceKHR,
+    pAllocator: *const AllocationCallbacks,
+);
+pub type PFN_vkDestroySurfaceKHR = std::option::Option<vkDestroySurfaceKHR>;
+pub type vkCreateWaylandSurfaceKHR = unsafe extern "C" fn(
+    instance: *mut Instance,
+    pCreateInfo: *const WaylandSurfaceCreateInfo,
+    pAllocator: *const AllocationCallbacks,
+    pSurface: *mut *mut SurfaceKHR,
+) -> u32;
+pub type PFN_vkCreateWaylandSurfaceKHR = Option<vkCreateWaylandSurfaceKHR>;
+pub type vkEnumeratePhsysicalDevices = unsafe extern "C" fn(
+    instance: *mut Instance,
+    pPhysicalDeviceCount: *mut u32,
+    pPhysicalDevices: *mut *mut PhysicalDevice,
+) -> u32;
+pub type PFN_vkEnumeratePhysicalDevices = std::option::Option<vkEnumeratePhsysicalDevices>;
+pub type vkEnumerateDeviceExtensionProperties = unsafe extern "C" fn(
+    physicalDevice: *mut PhysicalDevice,
+    pLayerName: *const std::ffi::c_char,
+    pPropertyCount: *mut u32,
+    pProperties: *mut ExtensionProperties,
+) -> u32;
+pub type PFN_vkEnumerateDeviceExtensionProperties = std::option::Option<vkEnumerateDeviceExtensionProperties>;
+pub type vkGetPhysicalDeviceSurfaceFormatsKHR = unsafe extern "C" fn(
+    physicalDevice: *mut PhysicalDevice,
+    surface: *mut SurfaceKHR,
+    pSurfaceFormatCount: *mut u32,
+    pSurfaceFormats: *mut SurfaceFormatKHR,
+) -> u32;
+pub type PFN_vkGetPhysicalDeviceSurfaceFormatsKHR = std::option::Option<vkGetPhysicalDeviceSurfaceFormatsKHR>;
+pub type vkGetPhysicalDeviceSurfacePresentModesKHR = unsafe extern "C" fn(
+    physicalDevice: *mut PhysicalDevice,
+    surface: *mut SurfaceKHR,
+    pPresentModeCount: *mut u32,
+    pPresentModes: *mut u32,
+) -> u32;
+pub type PFN_vkGetPhysicalDeviceSurfacePresentModesKHR = std::option::Option<vkGetPhysicalDeviceSurfacePresentModesKHR>;
+pub type vkGetPhysicalDeviceQueueFamilyProperties = unsafe extern "C" fn(
+    physicalDevice: *mut PhysicalDevice,
+    pQueueFamilyPropertyCount: *mut u32,
+    pQueueFamilyProperties: *mut QueueFamilyProperties,
+);
+pub type PFN_vkGetPhysicalDeviceQueueFamilyProperties = std::option::Option<vkGetPhysicalDeviceQueueFamilyProperties>;
+pub type vkGetPhysicalDeviceMemoryProperties = unsafe extern "C" fn(
+    physicalDevice: *mut PhysicalDevice,
+    pMemoryProperties: *mut PhysicalDeviceMemoryProperties,
+);
+pub type PFN_vkGetPhysicalDeviceMemoryProperties = std::option::Option<vkGetPhysicalDeviceMemoryProperties>;
+pub type vkGetPhysicalDeviceSurfaceSupportKHR = unsafe extern "C" fn(
+    physicalDevice: *mut PhysicalDevice,
+    queueFamilyIndex: u32,
+    surface: *mut SurfaceKHR,
+    pSupported: *mut u32,
+) -> u32;
+pub type PFN_vkGetPhysicalDeviceSurfaceSupportKHR = std::option::Option<vkGetPhysicalDeviceSurfaceSupportKHR>;
+pub type vkGetPhysicalDeviceSurfaceCapabilitiesKHR = unsafe extern "C" fn(
+    physicalDevice: *mut PhysicalDevice,
+    surface: *mut SurfaceKHR,
+    pSurfaceCapabilities: *mut SurfaceCapabilitiesKHR,
+) -> u32;
+pub type PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR = std::option::Option<vkGetPhysicalDeviceSurfaceCapabilitiesKHR>;

@@ -1,4 +1,6 @@
 /target
 /outputs
 /.direnv
+.package-cache
+.package-cache-mutate
 Cargo.lock

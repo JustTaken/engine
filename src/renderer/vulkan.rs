@@ -1,12 +1,38 @@
+#![allow(non_camel_case_types, non_snake_case)]
+
 use crate::binding::dl;
 use crate::binding::vulkan;
 use crate::binding::wayland;
 
-use std::mem::MaybeUninit;
+macro_rules! instance_function {
+    ($proc:ident, $instance:ident, $name:ident) => {
+        unsafe {
+            let string = std::ffi::CString::new(&stringify!($name)[4..]).unwrap();
+            let pointer = $proc($instance, string.as_ptr());
+            let func = std::mem::transmute::<vulkan::PFN_vkVoidFunction, vulkan::$name>(pointer);
 
-pub struct VulkanObject {
-    instance: *mut vulkan::Instance,
-    surface: *mut vulkan::Surface,
+            if let Some(f) = func {
+                Ok(f)
+            } else {
+                Err(LoadError::NoFunction)
+            }
+        }
+    }
+}
+
+pub struct InstanceDispatch {
+    handle: *mut vulkan::Instance,
+    vkDestroyInstance: vulkan::vkDestroyInstance,
+    vkDestroySurfaceKHR: vulkan::vkDestroySurfaceKHR,
+    vkCreateWaylandSurfaceKHR: vulkan::vkCreateWaylandSurfaceKHR,
+    vkEnumeratePhysicalDevices: vulkan::vkEnumeratePhsysicalDevices,
+    vkEnumerateDeviceExtensionProperties: vulkan::vkEnumerateDeviceExtensionProperties,
+    vkGetPhysicalDeviceSurfaceFormatsKHR: vulkan::vkGetPhysicalDeviceSurfaceFormatsKHR,
+    vkGetPhysicalDeviceSurfacePresentModesKHR: vulkan::vkGetPhysicalDeviceSurfacePresentModesKHR,
+    vkGetPhysicalDeviceQueueFamilyProperties: vulkan::vkGetPhysicalDeviceQueueFamilyProperties,
+    vkGetPhysicalDeviceMemoryProperties: vulkan::vkGetPhysicalDeviceMemoryProperties,
+    vkGetPhysicalDeviceSurfaceSupportKHR: vulkan::vkGetPhysicalDeviceSurfaceSupportKHR,
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR: vulkan::vkGetPhysicalDeviceSurfaceCapabilitiesKHR,
 }
 
 #[derive(Debug)]
@@ -15,23 +41,9 @@ pub enum LoadError {
     NoFunction,
     InstanceFailed,
     SurfaceCreate,
+    NoExtension,
+    NoSuitableDevice,
 }
-
-// macro_rules! load_function {
-//     ($lib:ident, $name:ident) => {
-//         unsafe {
-//             let string = std::ffi::CString::new(&stringify!($name)[4..]).unwrap();
-//             let pointer = dl::dlsym($lib, string.as_ptr());
-//             let func = std::mem::transmute::<*const std::ffi::c_void, vulkan::$name>(pointer);
-
-//             if let Some(f) = func {
-//                 Ok(f)
-//             } else {
-//                 Err(LoadError::NoFunction)
-//             }
-//         }
-//     }
-// }
 
 fn loader_function(library: *const std::ffi::c_void) -> vulkan::PFN_vkGetInstanceProcAddr {
     unsafe {
@@ -52,38 +64,21 @@ fn load_library(library_name: &str) -> Result<*const std::ffi::c_void, LoadError
     }
 }
 
-macro_rules! instance_function {
-    ($proc:ident, $instance:ident, $name:ident) => {
-        unsafe {
-            let string = std::ffi::CString::new(&stringify!($name)[4..]).unwrap();
-            let pointer = $proc($instance, string.as_ptr());
-            let func = std::mem::transmute::<vulkan::PFN_vkVoidFunction, vulkan::$name>(pointer);
-
-            if let Some(f) = func {
-                Ok(f)
-            } else {
-                Err(LoadError::NoFunction)
-            }
-        }
-    }
-}
-
 fn make_version(major: u8, minor: u8) -> u32 {
     let lower = (minor as u32) << 12;
     let higher = (major as u32) << 22;
     higher | lower
 }
 
-pub fn init(display: *mut wayland::wl_display, surface: *mut wayland::wl_surface, extensions: &[*const std::ffi::c_char]) -> Result<VulkanObject, LoadError> {
+pub fn dispatch(extensions: &[*const std::ffi::c_char]) -> Result<InstanceDispatch, LoadError> {
     let library = load_library("libvulkan.so")?;
 
-    let api_name = std::ffi::CString::new("Hello triangle").unwrap();
-    let engine_name = std::ffi::CString::new("Hello triangle").unwrap();
+    let api_name: *const std::ffi::c_char = b"Hello triangle\0".as_ptr().cast();
 
     let app_info = vulkan::ApplicationInfo {
         sType: vulkan::STRUCTURE_TYPE_APPLICATION_INFO,
-        pApplicationName: api_name.as_ptr(),
-        pEngineName: engine_name.as_ptr(),
+        pApplicationName: api_name,
+        pEngineName: api_name,
         applicationVersion: make_version(1, 3),
         engineVersion: make_version(1, 3),
         apiVersion: make_version(1, 3),
@@ -111,8 +106,28 @@ pub fn init(display: *mut wayland::wl_display, surface: *mut wayland::wl_surface
         return Err(LoadError::InstanceFailed);
     }
 
-    let vk_create_wayland_surface_khr = instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkCreateWaylandSurfaceKHR)?;
+    for string in extensions.into_iter() {
+        let _ = unsafe { std::ffi::CString::from_raw(*string as *mut i8) }; // Deinitialize previous strings allocated to create the VkInstance
+    }
 
+    Ok(InstanceDispatch {
+        handle: ptr_instance,
+        vkDestroyInstance: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkDestroyInstance)?,
+        vkDestroySurfaceKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkDestroySurfaceKHR)?,
+        vkCreateWaylandSurfaceKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkCreateWaylandSurfaceKHR)?,
+        vkEnumeratePhysicalDevices: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkEnumeratePhysicalDevices)?,
+        vkEnumerateDeviceExtensionProperties: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkEnumerateDeviceExtensionProperties)?,
+        vkGetPhysicalDeviceSurfaceFormatsKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceSurfaceFormatsKHR)?,
+        vkGetPhysicalDeviceSurfacePresentModesKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceSurfacePresentModesKHR)?,
+        vkGetPhysicalDeviceQueueFamilyProperties: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceQueueFamilyProperties)?,
+        vkGetPhysicalDeviceMemoryProperties: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceMemoryProperties)?,
+        vkGetPhysicalDeviceSurfaceSupportKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceSurfaceSupportKHR)?,
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)?,
+
+    })
+}
+
+pub fn surface(dispatch: &InstanceDispatch, display: *mut wayland::wl_display, surface: *mut wayland::wl_surface) -> Result<*mut vulkan::SurfaceKHR, LoadError> {
     let surface_info = vulkan::WaylandSurfaceCreateInfo {
         sType: vulkan::STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
         display: display,
@@ -120,14 +135,89 @@ pub fn init(display: *mut wayland::wl_display, surface: *mut wayland::wl_surface
         flags: 0,
         pNext: std::ptr::null(),
     };
-    let mut ptr_surface: *mut vulkan::Surface = std::ptr::null_mut();
 
-    if 0 != unsafe { vk_create_wayland_surface_khr(ptr_instance, &surface_info as *const vulkan::WaylandSurfaceCreateInfo, std::ptr::null(), &mut ptr_surface as *mut *mut vulkan::Surface) } {
+    let mut ptr_surface: *mut vulkan::SurfaceKHR = std::ptr::null_mut();
+
+    if 0 != unsafe { (dispatch.vkCreateWaylandSurfaceKHR)(dispatch.handle, &surface_info as *const vulkan::WaylandSurfaceCreateInfo, std::ptr::null(), &mut ptr_surface as *mut *mut vulkan::SurfaceKHR) } {
         return Err(LoadError::SurfaceCreate);
     }
 
-    Ok(VulkanObject {
-        instance: ptr_instance,
-        surface: ptr_surface
-    })
+    Ok(ptr_surface)
+}
+
+pub fn device(dispatch: &InstanceDispatch, surface: *mut vulkan::SurfaceKHR) -> Result<vulkan::Device, LoadError> {
+    let required_device_extension = unsafe { std::ffi::CStr::from_ptr(b"VK_KHR_swapchain\0".as_ptr().cast()) };
+    let mut count: u32 = 0;
+    unsafe { (dispatch.vkEnumeratePhysicalDevices)(dispatch.handle, &mut count as *mut u32, std::ptr::null_mut()) };
+    let mut physical_devices: Vec::<*mut vulkan::PhysicalDevice> = vec![std::ptr::null_mut(); count as usize];
+
+    unsafe { (dispatch.vkEnumeratePhysicalDevices)(dispatch.handle, &mut count as *mut u32, physical_devices.as_mut_ptr() as *mut *mut vulkan::PhysicalDevice) };
+
+    let mut found_physical_device = false;
+    for physical_device in physical_devices {
+        let mut count: u32 = 0;
+        unsafe { (dispatch.vkEnumerateDeviceExtensionProperties)(physical_device, std::ptr::null(), &mut count as *mut u32, std::ptr::null_mut()) };
+
+        let mut extension_properties: Vec<vulkan::ExtensionProperties> = Vec::with_capacity(count as usize);
+        unsafe { extension_properties.set_len(count as usize) };
+
+        unsafe { (dispatch.vkEnumerateDeviceExtensionProperties)(physical_device, std::ptr::null(), &mut count as *mut u32, extension_properties.as_mut_ptr() as *mut vulkan::ExtensionProperties) };
+
+        let mut flag = false;
+        for extension in extension_properties {
+            let propertie = unsafe { std::ffi::CStr::from_ptr(extension.extensionName.as_ptr()) };
+            if propertie == required_device_extension {
+                flag = true;
+                break;
+            }
+        }
+
+        if !flag {
+            continue;
+        }
+
+        let mut count: u32 = 0;
+        unsafe { (dispatch.vkGetPhysicalDeviceQueueFamilyProperties)(physical_device, &mut count as *mut u32, std::ptr::null_mut()) };
+
+        let mut family_properties: Vec<vulkan::QueueFamilyProperties> = Vec::with_capacity(count as usize);
+        unsafe { family_properties.set_len(count as usize) };
+        unsafe { (dispatch.vkGetPhysicalDeviceQueueFamilyProperties)(physical_device, &mut count as *mut u32, family_properties.as_mut_ptr() as *mut vulkan::QueueFamilyProperties) };
+
+        let mut families: [u32; 4] = [0; 4];
+        for (i, properties) in family_properties.iter().enumerate() {
+            let i = i as u32;
+            let mut family_flag: u32 = 0;
+            unsafe { (dispatch.vkGetPhysicalDeviceSurfaceSupportKHR)(physical_device, i, surface, &mut family_flag as *mut u32) };
+
+            if properties.queueFlags & vulkan::QUEUE_GRAPHICS_BIT != 0 {
+                families[0] = i;
+            } if family_flag == 1 {
+                families[1] = i;
+            }if properties.queueFlags & vulkan::QUEUE_COMPUTE_BIT != 0 {
+                families[2] = i;
+            } if properties.queueFlags & vulkan::QUEUE_TRANSFER_BIT != 0 {
+                families[3] = i;
+            }
+        }
+
+        found_physical_device = true;
+    }
+
+    if !found_physical_device {
+        return Err(LoadError::NoSuitableDevice);
+    }
+
+    Err(LoadError::NoFunction)
+}
+
+pub fn shutdown_surface(dispatch: &InstanceDispatch, surface: *mut vulkan::SurfaceKHR) {
+    unsafe {
+        (dispatch.vkDestroySurfaceKHR)(dispatch.handle, surface, std::ptr::null());
+    };
+}
+
+pub fn shutdown_instance(dispatch: &InstanceDispatch) {
+    unsafe {
+        (dispatch.vkDestroyInstance)(dispatch.handle, std::ptr::null());
+    };
 }

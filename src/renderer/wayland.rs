@@ -89,7 +89,7 @@ unsafe extern "C" fn global_listener(data: *mut std::ffi::c_void, wl_registry: *
     }
 }
 
-pub fn display(name: &str, width: u32, height: u32) -> Result<Core, WaylandError> {
+pub fn init(name: &str, width: u32, height: u32) -> Result<Core, WaylandError> {
     let mut core = Core {
         display: std::ptr::null_mut(),
         registry: std::ptr::null_mut(),
@@ -109,7 +109,7 @@ pub fn display(name: &str, width: u32, height: u32) -> Result<Core, WaylandError
     };
 
     core.display = unsafe { wayland::wl_display_connect(std::ptr::null()) } as *mut wayland::wl_display;
-    core.registry = unsafe { wayland::wl_proxy_marshal_flags(core.display as *mut wayland::wl_proxy, wayland::WL_DISPLAY_GET_REGISTRY, &wayland::wl_registry_interface, wayland::wl_proxy_get_version(display as *mut wayland::wl_proxy), 0) } as *mut wayland::wl_registry;
+    core.registry = unsafe { wayland::wl_proxy_marshal_flags(core.display as *mut wayland::wl_proxy, wayland::WL_DISPLAY_GET_REGISTRY, &wayland::wl_registry_interface, wayland::wl_proxy_get_version(core.display as *mut wayland::wl_proxy), 0) } as *mut wayland::wl_registry;
 
     let mut listener = wayland::wl_registry_listener {
         global: Some(global_listener),
