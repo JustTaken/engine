@@ -1,3 +1,5 @@
+#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals, unused_imports)]
+
 pub const WL_DISPLAY_GET_REGISTRY: u32 = 1;
 pub const WL_REGISTRY_BIND: u32 = 0;
 pub const WL_COMPOSITOR_CREATE_SURFACE: u32 = 0;

@@ -4,15 +4,19 @@ pub struct Core {
     pub display: *mut wayland::wl_display,
     pub surface: *mut wayland::wl_surface,
     pub extensions: [*const std::ffi::c_char; 2],
+    pub running: bool,
+    pub width: u32,
+    pub height: u32,
     registry: *mut wayland::wl_registry,
     compositor: *mut wayland::wl_compositor,
     seat: *mut wayland::wl_seat,
     xdg_shell: *mut wayland::xdg_wm_base,
     xdg_surface: *mut wayland::xdg_surface,
     xdg_toplevel: *mut wayland::xdg_toplevel,
-    width: u32,
-    height: u32,
-    running: bool,
+    registry_listener: wayland::wl_registry_listener,
+    shell_listener: wayland::xdg_wm_base_listener,
+    shell_surface_listener: wayland::xdg_surface_listener,
+    toplevel_listener: wayland::xdg_toplevel_listener,
 }
 
 #[derive(Debug)]
@@ -89,8 +93,8 @@ unsafe extern "C" fn global_listener(data: *mut std::ffi::c_void, wl_registry: *
     }
 }
 
-pub fn init(name: &str, width: u32, height: u32) -> Result<Core, WaylandError> {
-    let mut core = Core {
+pub fn init(name: &str, width: u32, height: u32) -> Result<Box<Core>, WaylandError> {
+    let mut core = Box::new(Core {
         display: std::ptr::null_mut(),
         registry: std::ptr::null_mut(),
         surface: std::ptr::null_mut(),
@@ -106,19 +110,30 @@ pub fn init(name: &str, width: u32, height: u32) -> Result<Core, WaylandError> {
         width,
         height,
         running: true,
-    };
+        registry_listener: wayland::wl_registry_listener {
+            global: Some(global_listener),
+            global_remove: Some(remove_listener),
+        },
+        shell_listener: wayland::xdg_wm_base_listener {
+            ping: Some(shell_ping)
+        },
+        shell_surface_listener: wayland::xdg_surface_listener {
+            configure: Some(shell_surface_configure)
+        },
+        toplevel_listener: wayland::xdg_toplevel_listener {
+            configure: Some(toplevel_configure),
+            configure_bounds: Some(toplevel_configure_bounds),
+            close: Some(toplevel_close),
+            wm_capabilities: Some(toplevel_wm_capabilities),
+        },
+    });
 
     core.display = unsafe { wayland::wl_display_connect(std::ptr::null()) } as *mut wayland::wl_display;
     core.registry = unsafe { wayland::wl_proxy_marshal_flags(core.display as *mut wayland::wl_proxy, wayland::WL_DISPLAY_GET_REGISTRY, &wayland::wl_registry_interface, wayland::wl_proxy_get_version(core.display as *mut wayland::wl_proxy), 0) } as *mut wayland::wl_registry;
 
-    let mut listener = wayland::wl_registry_listener {
-        global: Some(global_listener),
-        global_remove: Some(remove_listener),
-    };
-
     let data = unsafe { std::mem::transmute::<&mut Core, *mut std::ffi::c_void>(&mut core) };
 
-    let listener = unsafe { std::mem::transmute::<*mut wayland::wl_registry_listener, *mut Option<unsafe extern "C" fn()>>(&mut listener) };
+    let listener = unsafe { std::mem::transmute::<*mut wayland::wl_registry_listener, *mut Option<unsafe extern "C" fn()>>(&mut core.registry_listener) };
     if 0 != unsafe { wayland::wl_proxy_add_listener(core.registry as *mut wayland::wl_proxy, listener, data) } {
         return Err(WaylandError::CouldNotAddListener);
     }
@@ -127,32 +142,17 @@ pub fn init(name: &str, width: u32, height: u32) -> Result<Core, WaylandError> {
 
     core.surface = unsafe { wayland::wl_proxy_marshal_flags(core.compositor as *mut wayland::wl_proxy, wayland::WL_COMPOSITOR_CREATE_SURFACE, &wayland::wl_surface_interface, wayland::wl_proxy_get_version(core.compositor as *mut wayland::wl_proxy), 0, std::ptr::null::<std::ffi::c_void>()) } as *mut wayland::wl_surface;
 
-    let mut shell_listener = wayland::xdg_wm_base_listener {
-        ping: Some(shell_ping)
-    };
-
-    let mut shell_surface_listener = wayland::xdg_surface_listener {
-        configure: Some(shell_surface_configure)
-    };
-
-    let mut toplevel_listener = wayland::xdg_toplevel_listener {
-        configure: Some(toplevel_configure),
-        configure_bounds: Some(toplevel_configure_bounds),
-        close: Some(toplevel_close),
-        wm_capabilities: Some(toplevel_wm_capabilities),
-    };
-
-    if 0 != unsafe { wayland::wl_proxy_add_listener(core.xdg_shell as *mut wayland::wl_proxy, std::mem::transmute::<*mut wayland::xdg_wm_base_listener, *mut Option<unsafe extern "C" fn()>>(&mut shell_listener), data) } {
+    if 0 != unsafe { wayland::wl_proxy_add_listener(core.xdg_shell as *mut wayland::wl_proxy, std::mem::transmute::<*mut wayland::xdg_wm_base_listener, *mut Option<unsafe extern "C" fn()>>(&mut core.shell_listener), data) } {
         return Err(WaylandError::CouldNotAddListener);
     }
 
     core.xdg_surface = unsafe { wayland::wl_proxy_marshal_flags(core.xdg_shell as *mut wayland::wl_proxy, wayland::XDG_WM_BASE_GET_XDG_SURFACE, &wayland::xdg_surface_interface, wayland::wl_proxy_get_version(core.xdg_shell as *mut wayland::wl_proxy), 0, data, core.surface) } as *mut wayland::xdg_surface;
-    if 0 != unsafe { wayland::wl_proxy_add_listener(core.xdg_surface as *mut wayland::wl_proxy, std::mem::transmute::<*mut wayland::xdg_surface_listener, *mut Option<unsafe extern "C" fn()>>(&mut shell_surface_listener), data) } {
+    if 0 != unsafe { wayland::wl_proxy_add_listener(core.xdg_surface as *mut wayland::wl_proxy, std::mem::transmute::<*mut wayland::xdg_surface_listener, *mut Option<unsafe extern "C" fn()>>(&mut core.shell_surface_listener), data) } {
         return Err(WaylandError::CouldNotAddListener);
     }
 
     core.xdg_toplevel = unsafe { wayland::wl_proxy_marshal_flags(core.xdg_surface as *mut wayland::wl_proxy, wayland::XDG_SURFACE_GET_TOPLEVEL, &wayland::xdg_toplevel_interface, wayland::wl_proxy_get_version(core.xdg_surface as *mut wayland::wl_proxy), 0, std::ptr::null_mut::<std::ffi::c_void>()) } as *mut wayland::xdg_toplevel;
-    if 0 != unsafe { wayland::wl_proxy_add_listener(core.xdg_toplevel as *mut wayland::wl_proxy, std::mem::transmute::<*mut wayland::xdg_toplevel_listener, *mut Option<unsafe extern "C" fn()>>(&mut toplevel_listener), std::mem::transmute::<*mut Core, *mut std::ffi::c_void>(&mut core)) } {
+    if 0 != unsafe { wayland::wl_proxy_add_listener(core.xdg_toplevel as *mut wayland::wl_proxy, std::mem::transmute::<*mut wayland::xdg_toplevel_listener, *mut Option<unsafe extern "C" fn()>>(&mut core.toplevel_listener), std::mem::transmute::<*mut Core, *mut std::ffi::c_void>(&mut *core)) } {
         return Err(WaylandError::CouldNotAddListener);
     }
 
@@ -163,6 +163,13 @@ pub fn init(name: &str, width: u32, height: u32) -> Result<Core, WaylandError> {
     unsafe { wayland::wl_display_roundtrip(core.display) };
 
     Ok(core)
+}
+
+pub fn update(core: &Core) {
+    unsafe {
+        wayland::wl_proxy_marshal_flags(core.surface as *mut wayland::wl_proxy, wayland::WL_SURFACE_COMMIT, std::ptr::null(), wayland::wl_proxy_get_version(core.surface as *mut wayland::wl_proxy), 0);
+        wayland::wl_display_roundtrip(core.display);
+    };
 }
 
 pub fn shutdown(core: &Core) {
