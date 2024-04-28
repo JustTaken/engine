@@ -62,6 +62,7 @@ pub struct Device {
     physical_device: *mut vulkan::PhysicalDevice,
     queues: Vec<*mut vulkan::Queue>,
     families: [u32; 4],
+
     capabilities: vulkan::SurfaceCapabilitiesKHR,
     properties: vulkan::PhysicalDeviceMemoryProperties,
     vkDestroyDevice: vulkan::vkDestroyDevice,
@@ -118,6 +119,10 @@ pub struct Device {
     vkUnmapMemory: vulkan::vkUnmapMemory,
     vkCmdBindVertexBuffers: vulkan::vkCmdBindVertexBuffers,
     vkResetFences: vulkan::vkResetFences,
+    vkCmdPipelineBarrier: vulkan::vkCmdPipelineBarrier,
+    vkFreeCommandBuffers: vulkan::vkFreeCommandBuffers,
+    vkQueueWaitIdle: vulkan::vkQueueWaitIdle,
+    vkCmdCopyBufferToImage: vulkan::vkCmdCopyBufferToImage,
 }
 
 pub struct GraphicsPipeline {
@@ -128,6 +133,11 @@ pub struct GraphicsPipeline {
     descriptor_set_layout: *mut vulkan::DescriptorSetLayout,
     surface_format: vulkan::SurfaceFormatKHR,
     depth_format: u32,
+}
+
+struct Buffer {
+    handle: *mut vulkan::Buffer,
+    memory: *mut vulkan::DeviceMemory,
 }
 
 pub struct Swapchain {
@@ -141,8 +151,7 @@ pub struct Swapchain {
     command_pool: *mut vulkan::CommandPool,
     extent: vulkan::Extent2D,
 
-    vertex_buffer: *mut vulkan::Buffer,
-    vertex_buffer_memory: *mut vulkan::DeviceMemory,
+    vertex_buffer: Buffer,
 
     image_available: *mut vulkan::Semaphore,
     render_finished: *mut vulkan::Semaphore,
@@ -169,6 +178,8 @@ pub enum LoadError {
     SwapchainDepthImage,
     SwapchainBuffer,
     SyncMemberFailed,
+    BufferCreate,
+    ImageFail,
 }
 
 fn loader_function(library: *const std::ffi::c_void) -> vulkan::PFN_vkGetInstanceProcAddr {
@@ -190,25 +201,19 @@ fn load_library(library_name: &str) -> Result<*const std::ffi::c_void, LoadError
     }
 }
 
-fn make_version(major: u8, minor: u8) -> u32 {
-    let lower = (minor as u32) << 12;
-    let higher = (major as u32) << 22;
-    higher | lower
-}
-
 pub fn instance(extensions: &[*const std::ffi::c_char]) -> Result<Instance, LoadError> {
     let library = load_library("libvulkan.so")?;
-
-    let api_name: *const std::ffi::c_char = b"Hello triangle\0".as_ptr().cast();
     let layer_name: *const std::ffi::c_char = b"VK_LAYER_KHRONOS_validation\0".as_ptr().cast();
+    let api_name: *const std::ffi::c_char = b"Hello triangle\0".as_ptr().cast();
+    let version = ((1 as u32) << 22) | ((3 as u32) << 12);
 
     let app_info = vulkan::ApplicationInfo {
         sType: vulkan::STRUCTURE_TYPE_APPLICATION_INFO,
         pApplicationName: api_name,
         pEngineName: api_name,
-        applicationVersion: make_version(1, 3),
-        engineVersion: make_version(1, 3),
-        apiVersion: make_version(1, 3),
+        applicationVersion: version,
+        engineVersion: version,
+        apiVersion: version,
         pNext: std::ptr::null()
     };
 
@@ -223,13 +228,12 @@ pub fn instance(extensions: &[*const std::ffi::c_char]) -> Result<Instance, Load
         pNext: std::ptr::null(),
     };
 
-    let vk_get_instance_proc_addr = loader_function(library).ok_or(LoadError::NoFunction)?;
+    let vkGetInstanceProcAddr = loader_function(library).ok_or(LoadError::NoFunction)?;
     let null = std::ptr::null_mut();
-    let vk_create_instance = instance_function!(vk_get_instance_proc_addr, null, PFN_vkCreateInstance)?;
+    let vkCreateInstance = instance_function!(vkGetInstanceProcAddr, null, PFN_vkCreateInstance)?;
 
-    let mut ptr_instance: *mut vulkan::Instance = std::ptr::null_mut();
-
-    if 0 != unsafe { vk_create_instance(&create_info as *const vulkan::InstanceCreateInfo, std::ptr::null(), &mut ptr_instance as *mut *mut vulkan::Instance) } {
+    let mut instance: *mut vulkan::Instance = std::ptr::null_mut();
+    if 0 != unsafe { vkCreateInstance(&create_info as *const vulkan::InstanceCreateInfo, std::ptr::null(), &mut instance as *mut *mut vulkan::Instance) } {
         return Err(LoadError::InstanceFailed);
     }
 
@@ -238,23 +242,23 @@ pub fn instance(extensions: &[*const std::ffi::c_char]) -> Result<Instance, Load
     }
 
     Ok(Instance {
-        handle: ptr_instance,
-        vkDestroyInstance: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkDestroyInstance)?,
-        vkDestroySurfaceKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkDestroySurfaceKHR)?,
-        vkCreateWaylandSurfaceKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkCreateWaylandSurfaceKHR)?,
-        vkEnumeratePhysicalDevices: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkEnumeratePhysicalDevices)?,
-        vkEnumerateDeviceExtensionProperties: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkEnumerateDeviceExtensionProperties)?,
-        vkGetPhysicalDeviceSurfaceFormatsKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceSurfaceFormatsKHR)?,
-        vkGetPhysicalDeviceQueueFamilyProperties: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceQueueFamilyProperties)?,
-        vkGetPhysicalDeviceMemoryProperties: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceMemoryProperties)?,
-        vkGetPhysicalDeviceSurfaceSupportKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceSurfaceSupportKHR)?,
-        vkGetPhysicalDeviceSurfaceCapabilitiesKHR: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)?,
-        vkGetPhysicalDeviceFeatures: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceFeatures)?,
-        vkGetPhysicalDeviceProperties: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceProperties)?,
-        vkCreateDevice: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkCreateDevice)?,
-        vkGetDeviceQueue: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetDeviceQueue)?,
-        vkGetDeviceProcAddr: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetDeviceProcAddr)?,
-        vkGetPhysicalDeviceFormatProperties: instance_function!(vk_get_instance_proc_addr, ptr_instance, PFN_vkGetPhysicalDeviceFormatProperties)?,
+        handle: instance,
+        vkDestroyInstance: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkDestroyInstance)?,
+        vkDestroySurfaceKHR: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkDestroySurfaceKHR)?,
+        vkCreateWaylandSurfaceKHR: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkCreateWaylandSurfaceKHR)?,
+        vkEnumeratePhysicalDevices: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkEnumeratePhysicalDevices)?,
+        vkEnumerateDeviceExtensionProperties: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkEnumerateDeviceExtensionProperties)?,
+        vkGetPhysicalDeviceSurfaceFormatsKHR: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetPhysicalDeviceSurfaceFormatsKHR)?,
+        vkGetPhysicalDeviceQueueFamilyProperties: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetPhysicalDeviceQueueFamilyProperties)?,
+        vkGetPhysicalDeviceMemoryProperties: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetPhysicalDeviceMemoryProperties)?,
+        vkGetPhysicalDeviceSurfaceSupportKHR: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetPhysicalDeviceSurfaceSupportKHR)?,
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)?,
+        vkGetPhysicalDeviceFeatures: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetPhysicalDeviceFeatures)?,
+        vkGetPhysicalDeviceProperties: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetPhysicalDeviceProperties)?,
+        vkCreateDevice: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkCreateDevice)?,
+        vkGetDeviceQueue: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetDeviceQueue)?,
+        vkGetDeviceProcAddr: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetDeviceProcAddr)?,
+        vkGetPhysicalDeviceFormatProperties: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetPhysicalDeviceFormatProperties)?,
     })
 }
 
@@ -363,6 +367,7 @@ pub fn device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR) -> Result<D
         physical_device: choosen_physical_device,
         families: families_indices,
         capabilities,
+
         properties: memory_properties,
         vkDestroyDevice: device_function!(vkGetDeviceProcAddr, device, PFN_vkDestroyDevice)?,
         vkCreateShaderModule: device_function!(vkGetDeviceProcAddr, device, PFN_vkCreateShaderModule)?,
@@ -388,7 +393,6 @@ pub fn device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR) -> Result<D
         vkAllocateMemory: device_function!(vkGetDeviceProcAddr, device, PFN_vkAllocateMemory)?,
         vkDestroyImage: device_function!(vkGetDeviceProcAddr, device, PFN_vkDestroyImage)?,
         vkFreeMemory: device_function!(vkGetDeviceProcAddr, device, PFN_vkFreeMemory)?,
-        vkBindImageMemory: device_function!(vkGetDeviceProcAddr, device, PFN_vkBindImageMemory)?,
         vkCreateFramebuffer: device_function!(vkGetDeviceProcAddr, device, PFN_vkCreateFramebuffer)?,
         vkDestroyFramebuffer: device_function!(vkGetDeviceProcAddr, device, PFN_vkDestroyFramebuffer)?,
         vkCreateCommandPool: device_function!(vkGetDeviceProcAddr, device, PFN_vkCreateCommandPool)?,
@@ -418,12 +422,16 @@ pub fn device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR) -> Result<D
         vkUnmapMemory: device_function!(vkGetDeviceProcAddr, device, PFN_vkUnmapMemory)?,
         vkCmdBindVertexBuffers: device_function!(vkGetDeviceProcAddr, device, PFN_vkCmdBindVertexBuffers)?,
         vkResetFences: device_function!(vkGetDeviceProcAddr, device, PFN_vkResetFences)?,
+        vkBindImageMemory: device_function!(vkGetDeviceProcAddr, device, PFN_vkBindImageMemory)?,
+        vkCmdPipelineBarrier: device_function!(vkGetDeviceProcAddr, device, PFN_vkCmdPipelineBarrier)?,
+        vkFreeCommandBuffers: device_function!(vkGetDeviceProcAddr, device, PFN_vkFreeCommandBuffers)?,
+        vkQueueWaitIdle: device_function!(vkGetDeviceProcAddr, device, PFN_vkQueueWaitIdle)?,
+        vkCmdCopyBufferToImage: device_function!(vkGetDeviceProcAddr, device, PFN_vkCmdCopyBufferToImage)?,
     })
 }
 
 fn avaliate_device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR, required_device_extension: &std::ffi::CStr, physical_device: *mut vulkan::PhysicalDevice) -> [u32; 5] {
     let mut ans: [u32; 5] = [0; 5];
-
     let mut count: u32 = 0;
     unsafe { (dispatch.vkEnumerateDeviceExtensionProperties)(physical_device, std::ptr::null(), &mut count as *mut u32, std::ptr::null_mut()) };
 
@@ -452,7 +460,7 @@ fn avaliate_device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR, requir
     unsafe { family_properties.set_len(count as usize) };
     unsafe { (dispatch.vkGetPhysicalDeviceQueueFamilyProperties)(physical_device, &mut count as *mut u32, family_properties.as_mut_ptr() as *mut vulkan::QueueFamilyProperties) };
 
-    let mut families: [ Option<u32>; 4] = [None; 4];
+    let mut families: [Option<u32>; 4] = [None; 4];
     for (i, properties) in family_properties.iter().enumerate() {
         let i = i as u32;
         let mut family_flag: u32 = 0;
@@ -463,7 +471,7 @@ fn avaliate_device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR, requir
             families[0] = Some(i);
         } if family_flag == vulkan::TRUE && !families[1].is_some() {
             families[1] = Some(i);
-        }if properties.queueFlags & vulkan::QUEUE_COMPUTE_BIT != 0 && !families[2].is_some() {
+        } if properties.queueFlags & vulkan::QUEUE_COMPUTE_BIT != 0 && !families[2].is_some() {
             families[2] = Some(i);
         } if properties.queueFlags & vulkan::QUEUE_TRANSFER_BIT != 0 && !families[3].is_some() {
             families[3] = Some(i);
@@ -897,6 +905,55 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance) -> Result<Graphic
     })
 }
 
+fn buffer<T>(device: &Device, command_pool: *mut vulkan::CommandPool, usage: u32, properties: u32, len: usize) -> Result<Buffer, LoadError> {
+    let buffer_info = vulkan::BufferCreateInfo {
+        sType: vulkan::STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        pNext: std::ptr::null(),
+        flags: 0,
+        size: (std::mem::size_of::<T>() * len) as u64,
+        usage: usage,
+        sharingMode: vulkan::SHARING_MODE_EXCLUSIVE,
+        queueFamilyIndexCount: 0,
+        pQueueFamilyIndices: std::ptr::null()
+    };
+
+    let mut handle: *mut vulkan::Buffer = std::ptr::null_mut();
+    if 0 != unsafe { (device.vkCreateBuffer)(device.handle, &buffer_info, std::ptr::null(), &mut handle as *mut *mut vulkan::Buffer) } {
+    }
+
+    let mut memory_requirements = std::mem::MaybeUninit::<vulkan::MemoryRequirements>::uninit();
+    let mut memory_index: u32 = 0;
+
+    unsafe { (device.vkGetBufferMemoryRequirements)(device.handle, handle, memory_requirements.as_mut_ptr() as *mut vulkan::MemoryRequirements) };
+    let memory_requirements = unsafe { memory_requirements.assume_init() };
+
+    for i in 0..device.properties.memoryTypeCount {
+        if memory_requirements.memoryTypeBits & (1 as u32) << i != 0 && device.properties.memoryTypes[i as usize].propertyFlags & properties == properties {
+            memory_index = i as u32;
+            break;
+        }
+    }
+
+    let alloc_info = vulkan::MemoryAllocateInfo {
+        sType: vulkan::STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        pNext: std::ptr::null(),
+        allocationSize: memory_requirements.size,
+        memoryTypeIndex: memory_index,
+    };
+
+    let mut memory: *mut vulkan::DeviceMemory = std::ptr::null_mut();
+    if 0 != unsafe { (device.vkAllocateMemory)(device.handle, &alloc_info as *const vulkan::MemoryAllocateInfo, std::ptr::null(), &mut memory as *mut *mut vulkan::DeviceMemory) } {
+        return Err(LoadError::BufferCreate);
+    }
+
+    unsafe { (device.vkBindBufferMemory)(device.handle, handle, memory, 0) };
+
+    Ok(Buffer {
+        handle,
+        memory,
+    })
+}
+
 pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, width: u32, height: u32) -> Result<Swapchain, LoadError> {
     let present_mode = vulkan::PRESENT_MODE_FIFO_KHR;
     let extent = if device.capabilities.currentExtent.width != 0xFFFFFFFF {
@@ -1137,53 +1194,119 @@ pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, width: u
         [-0.5, 0.5],
     ];
 
-    let buffer_info = vulkan::BufferCreateInfo {
-        sType: vulkan::STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+    let vertex_buffer = buffer::<[f32; 3]>(device, command_pool, vulkan::BUFFER_USAGE_VERTEX_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, vertices.len())?;
+
+    let mut data: *mut [f32; 2] = std::ptr::null_mut();
+    unsafe { (device.vkMapMemory)(device.handle, vertex_buffer.memory, 0, (vertices.len() * std::mem::size_of::<[f32; 2]>()) as u64, 0, std::mem::transmute::<&mut *mut [f32; 2], *mut *mut std::ffi::c_void>(&mut data)) };
+    unsafe { std::ptr::copy(vertices.as_ptr(), data, 3) };
+    unsafe { (device.vkUnmapMemory)(device.handle, vertex_buffer.memory) };
+
+    let pixels: [u8; 1024] = [255; 1024];
+    let texture_buffer = buffer::<u8>(device, command_pool, vulkan::BUFFER_USAGE_TRANSFER_SRC_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, pixels.len())?;
+
+    let mut dst: *mut u8 = std::ptr::null_mut();
+    unsafe { (device.vkMapMemory)(device.handle, texture_buffer.memory, 0, pixels.len() as u64, 0, std::mem::transmute::<&mut *mut u8, *mut *mut std::ffi::c_void>(&mut dst)) };
+    unsafe { std::ptr::copy(pixels.as_ptr(), dst, pixels.len()) };
+    unsafe { (device.vkUnmapMemory)(device.handle, texture_buffer.memory) };
+
+    let texture_image_info = vulkan::ImageCreateInfo {
+        sType: vulkan::STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         pNext: std::ptr::null(),
         flags: 0,
-        // size: (std::mem::size_of::<[f32; 2]>() * vertices.len()) as u64,
-        size: 24 as u64,
-        usage: vulkan::BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        imageType: vulkan::IMAGE_TYPE_2D,
+        extent: vulkan::Extent3D {
+            width: 128,
+            height: 8,
+            depth: 1,
+        },
+        mipLevels: 1,
+        arrayLayers: 1,
+        format: vulkan::R8_UNORM,
+        tiling: vulkan::IMAGE_TILING_OPTIMAL,
+        initialLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
+        usage: vulkan::IMAGE_USAGE_TRANSFER_DST_BIT | vulkan::IMAGE_USAGE_SAMPLED_BIT,
         sharingMode: vulkan::SHARING_MODE_EXCLUSIVE,
+        samples: vulkan::SAMPLE_COUNT_1_BIT,
         queueFamilyIndexCount: 0,
-        pQueueFamilyIndices: std::ptr::null()
+        pQueueFamilyIndices: std::ptr::null(),
     };
 
-    let mut vertex_buffer: *mut vulkan::Buffer = std::ptr::null_mut();
-    if 0 != unsafe { (device.vkCreateBuffer)(device.handle, &buffer_info, std::ptr::null(), &mut vertex_buffer as *mut *mut vulkan::Buffer) } {
+    let mut texture_image: *mut vulkan::Image = std::ptr::null_mut();
+    if 0 != unsafe { (device.vkCreateImage)(device.handle, &texture_image_info as *const vulkan::ImageCreateInfo, std::ptr::null(), &mut texture_image as *mut *mut vulkan::Image) } {
+        return Err(LoadError::ImageFail);
     }
 
     let mut memory_requirements = std::mem::MaybeUninit::<vulkan::MemoryRequirements>::uninit();
-    let property_flags = vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    unsafe { (device.vkGetImageMemoryRequirements)(device.handle, texture_image, memory_requirements.as_mut_ptr() as *mut vulkan::MemoryRequirements) };
 
-    let mut memory_index: u32 = 0;
-    unsafe { (device.vkGetBufferMemoryRequirements)(device.handle, vertex_buffer, memory_requirements.as_mut_ptr() as *mut vulkan::MemoryRequirements) };
     let memory_requirements = unsafe { memory_requirements.assume_init() };
+    let mut memory_index: u32 = 0;
 
+    let property = vulkan::MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     for i in 0..device.properties.memoryTypeCount {
-        if memory_requirements.memoryTypeBits & (1 as u32) << i != 0 && device.properties.memoryTypes[i as usize].propertyFlags & property_flags == property_flags {
+        if memory_requirements.memoryTypeBits & (1 as u32) << i != 0 && device.properties.memoryTypes[i as usize].propertyFlags & property == property {
             memory_index = i as u32;
             break;
         }
     }
 
-    let alloc_info = vulkan::MemoryAllocateInfo {
+    let texture_memory_allocate_info = vulkan::MemoryAllocateInfo {
         sType: vulkan::STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         pNext: std::ptr::null(),
         allocationSize: memory_requirements.size,
-        memoryTypeIndex: memory_index,
+        memoryTypeIndex: memory_index as u32,
     };
 
-    let mut vertex_buffer_memory: *mut vulkan::DeviceMemory = std::ptr::null_mut();
-    if 0 != unsafe { (device.vkAllocateMemory)(device.handle, &alloc_info as *const vulkan::MemoryAllocateInfo, std::ptr::null(), &mut vertex_buffer_memory as *mut *mut vulkan::DeviceMemory) } {
-        return Err(LoadError::SwapchainBuffer);
-    }
+    let mut texture_memory: *mut vulkan::DeviceMemory = std::ptr::null_mut();
+    unsafe { (device.vkAllocateMemory)(device.handle, &texture_memory_allocate_info as *const vulkan::MemoryAllocateInfo, std::ptr::null(), &mut texture_memory as *mut *mut vulkan::DeviceMemory) };
+    unsafe { (device.vkBindImageMemory)(device.handle, texture_image, texture_memory, 0) };
 
-    unsafe { (device.vkBindBufferMemory)(device.handle, vertex_buffer, vertex_buffer_memory, 0) };
-    let mut data: *mut [f32; 2] = std::ptr::null_mut();
-    unsafe { (device.vkMapMemory)(device.handle, vertex_buffer_memory, 0, buffer_info.size, 0, std::mem::transmute::<&mut *mut [f32; 2], *mut *mut std::ffi::c_void>(&mut data)) };
-    unsafe { std::ptr::copy(vertices.as_ptr(), data, 3) };
-    unsafe { (device.vkUnmapMemory)(device.handle, vertex_buffer_memory) };
+    let barrier_command_buffer = begin_command_buffer(device, command_pool);
+
+    let barrier = vulkan::ImageMemoryBarrier {
+        sType: vulkan::STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        pNext: std::ptr::null(),
+        oldLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
+        newLayout: vulkan::IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        srcQueueFamilyIndex: vulkan::QUEUE_FAMILY_IGNORED,
+        dstQueueFamilyIndex: vulkan::QUEUE_FAMILY_IGNORED,
+        image: texture_image,
+        subresourceRange: vulkan::ImageSubresourceRange {
+            aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
+            baseMipLevel: 0,
+            levelCount: 1,
+            baseArrayLayer: 0,
+            layerCount: 1,
+        },
+        srcAccessMask: 0,
+        dstAccessMask: 0,
+    };
+
+    unsafe { (device.vkCmdPipelineBarrier)(barrier_command_buffer, 0, 0, 0, 0 as u32, std::ptr::null(), 0, std::ptr::null(), 1, &barrier) };
+    let region = vulkan::BufferImageCopy {
+        bufferOffset: 0,
+        bufferRowLength: 0,
+        bufferImageHeight: 0,
+        imageSubresource: vulkan::ImageSubresourceLayers {
+            aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
+            mipLevel: 0,
+            baseArrayLayer: 0,
+            layerCount: 1,
+        },
+        imageOffset: vulkan::Offset3D {
+            x: 0,
+            y: 0,
+            z: 0,
+        },
+        imageExtent: vulkan::Extent3D {
+            width: 128,
+            height: 8,
+            depth: 1,
+        },
+    };
+
+    unsafe { (device.vkCmdCopyBufferToImage)(barrier_command_buffer, texture_buffer.handle, texture_image, vulkan::IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region as *const vulkan::BufferImageCopy) };
+    end_command_buffer(device, command_pool, barrier_command_buffer);
 
     Ok(Swapchain {
         handle,
@@ -1197,12 +1320,53 @@ pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, width: u
         command_pool,
         command_buffers,
         vertex_buffer,
-        vertex_buffer_memory,
 
         render_finished,
         image_available,
         in_flight,
     })
+}
+
+fn begin_command_buffer(device: &Device, command_pool: *mut vulkan::CommandPool) -> *mut vulkan::CommandBuffer {
+    let mut command_buffer: *mut vulkan::CommandBuffer = std::ptr::null_mut();
+    let alloc_info = vulkan::CommandBufferAllocateInfo {
+        sType: vulkan::STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        pNext: std::ptr::null(),
+        commandPool: command_pool,
+        level: vulkan::COMMAND_BUFFER_LEVEL_PRIMARY,
+        commandBufferCount: 1,
+    };
+
+    unsafe { (device.vkAllocateCommandBuffers)(device.handle, &alloc_info as *const vulkan::CommandBufferAllocateInfo, &mut command_buffer as *mut *mut vulkan::CommandBuffer) };
+    let begin_info = vulkan::CommandBufferBeginInfo {
+        sType: vulkan::STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        flags: vulkan::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        pNext: std::ptr::null(),
+        pInheritanceInfo: std::ptr::null(),
+    };
+
+    unsafe { (device.vkBeginCommandBuffer)(command_buffer, &begin_info as *const vulkan::CommandBufferBeginInfo) };
+
+    command_buffer
+}
+
+fn end_command_buffer(device: &Device, command_pool: *mut vulkan::CommandPool, command_buffer: *mut vulkan::CommandBuffer) {
+    unsafe { (device.vkEndCommandBuffer)(command_buffer) };
+    let submit_info = vulkan::SubmitInfo {
+        sType: vulkan::STRUCTURE_TYPE_SUBMIT_INFO,
+        pNext: std::ptr::null(),
+        commandBufferCount: 1,
+        pCommandBuffers: &command_buffer as *const *mut vulkan::CommandBuffer,
+        waitSemaphoreCount: 0,
+        pWaitSemaphores: std::ptr::null(),
+        pWaitDstStageMask: std::ptr::null(),
+        signalSemaphoreCount: 0,
+        pSignalSemaphores: std::ptr::null(),
+    };
+
+    unsafe { (device.vkQueueSubmit)(device.queues[0], 1, &submit_info as *const vulkan::SubmitInfo, std::ptr::null_mut()) };
+    unsafe { (device.vkQueueWaitIdle)(device.queues[0]) };
+    unsafe { (device.vkFreeCommandBuffers)(device.handle, command_pool, 1, &command_buffer as *const *mut vulkan::CommandBuffer) };
 }
 
 pub fn recreate_swapchain(device: &Device, swapchain: &mut Swapchain, graphics_pipeline: &GraphicsPipeline, width: u32, height: u32) -> Result<(), LoadError> {
@@ -1471,7 +1635,7 @@ pub fn record_command_buffer(device: &Device, swapchain: &Swapchain, graphics_pi
     };
 
     unsafe { (device.vkCmdSetScissor)(swapchain.command_buffers[image_index as usize], 0, 1, &scissor as *const vulkan::Rect2D) };
-    unsafe { (device.vkCmdBindVertexBuffers)(swapchain.command_buffers[image_index as usize], 0, 1, &swapchain.vertex_buffer as *const *mut vulkan::Buffer, [0].as_ptr()) };
+    unsafe { (device.vkCmdBindVertexBuffers)(swapchain.command_buffers[image_index as usize], 0, 1, &swapchain.vertex_buffer.handle as *const *mut vulkan::Buffer, [0].as_ptr()) };
     unsafe { (device.vkCmdDraw)(swapchain.command_buffers[image_index as usize], 3, 1, 0, 0) };
     unsafe { (device.vkCmdEndRenderPass)(swapchain.command_buffers[image_index as usize]) };
     if 0 != unsafe { (device.vkEndCommandBuffer)(swapchain.command_buffers[image_index as usize]) } {}
@@ -1537,8 +1701,8 @@ pub fn shutdown_swapchain(device: &Device, swapchain: &Swapchain) {
             (device.vkDestroyFramebuffer)(device.handle, *framebuffer, null);
         }
 
-        (device.vkFreeMemory)(device.handle, swapchain.vertex_buffer_memory, null);
-        (device.vkDestroyBuffer)(device.handle, swapchain.vertex_buffer, null);
+        (device.vkFreeMemory)(device.handle, swapchain.vertex_buffer.memory, null);
+        (device.vkDestroyBuffer)(device.handle, swapchain.vertex_buffer.handle, null);
         (device.vkDestroySemaphore)(device.handle, swapchain.render_finished, null);
         (device.vkDestroySemaphore)(device.handle, swapchain.image_available, null);
         (device.vkDestroyFence)(device.handle, swapchain.in_flight, null);

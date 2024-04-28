@@ -41,24 +41,34 @@ pub const STRUCTURE_TYPE_FENCE_CREATE_INFO: u32 = 8;
 pub const STRUCTURE_TYPE_SUBMIT_INFO: u32 = 4;
 pub const STRUCTURE_TYPE_PRESENT_INFO_KHR: u32 = 1000001001;
 pub const STRUCTURE_TYPE_BUFFER_CREATE_INFO: u32 = 12;
+pub const STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER: u32 = 45;
+
+pub const QUEUE_FAMILY_IGNORED: u32 = 0;
+pub const IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: u32 = 7;
 
 pub const SUBOPTIMAL_KHR: i32 = 1000001003;
 pub const OUT_OF_DATE_KHR: i32 = -1000001004;
 
 pub const MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 2;
 pub const MEMORY_PROPERTY_HOST_COHERENT_BIT: u32 = 4;
+pub const MEMORY_PROPERTY_DEVICE_LOCAL_BIT: u32 = 1;
 
 pub const COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: u32 = 2;
 pub const COMMAND_BUFFER_LEVEL_PRIMARY: u32 = 0;
+pub const COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: u32 = 1;
 
 pub const FENCE_CREATE_SIGNALED_BIT: u32 = 1;
-
 pub const SUBPASS_CONTENTS_INLINE: u32 = 0;
 
+pub const IMAGE_USAGE_TRANSFER_SRC_BIT: u32 = 1;
+pub const IMAGE_USAGE_TRANSFER_DST_BIT: u32 = 2;
+pub const IMAGE_USAGE_SAMPLED_BIT: u32 = 4;
 pub const IMAGE_USAGE_COLOR_ATTACHMENT_BIT: u32 = 16;
 pub const IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT: u32 = 32;
+
 pub const IMAGE_TILING_OPTIMAL: u32 = 0;
 pub const IMAGE_ASPECT_DEPTH_BIT: u32 = 2;
+pub const IMAGE_TYPE_2D: u32 = 1;
 
 pub const IMAGE_VIEW_TYPE_2D: u32 = 1;
 pub const IMAGE_ASPECT_COLOR_BIT: u32 = 1;
@@ -67,7 +77,9 @@ pub const COMPONENT_SWIZZLE_IDENTITY: u32 = 0;
 
 pub const SHARING_MODE_EXCLUSIVE: u32 = 0;
 pub const SHARING_MODE_CONCURRENT: u32 = 1;
+
 pub const BUFFER_USAGE_VERTEX_BUFFER_BIT: u32 = 128;
+pub const BUFFER_USAGE_TRANSFER_SRC_BIT: u32 = 1;
 
 pub const PRESENT_MODE_FIFO_KHR: u32 = 2;
 
@@ -114,6 +126,7 @@ pub const FRONT_FACE_CLOCKWISE: u32 = 1;
 pub const FRONT_FACE_COUNTER_CLOCKWISE: u32 = 0;
 pub const CULL_MODE_BACK_BIT: u32 = 2;
 
+pub const R8_UNORM: u32 = 9;
 pub const R8G8B8A8_SRGB: u32 = 43;
 pub const R32G32B32_SFLOAT: u32 = 106;
 pub const R32G32_SFLOAT: u32 = 103;
@@ -1159,6 +1172,66 @@ pub struct BufferCreateInfo {
     pub pQueueFamilyIndices: *const u32,
 }
 
+#[repr(C)]
+pub struct MemoryBarrier {
+    pub sType: u32,
+    pub pNext: *const void,
+    pub srcAccessMask: u32,
+    pub dstAccessMask: u32,
+}
+
+#[repr(C)]
+pub struct BufferMemoryBarrier {
+    pub sType: u32,
+    pub pNext: *const void,
+    pub srcAccessMask: u32,
+    pub dstAccessMask: u32,
+    pub srcQueueFamilyIndex: u32,
+    pub dstQueueFamilyIndex: u32,
+    pub buffer: *mut Buffer,
+    pub offset: u64,
+    pub size: u64,
+}
+
+#[repr(C)]
+pub struct ImageMemoryBarrier {
+    pub sType: u32,
+    pub pNext: *const void,
+    pub srcAccessMask: u32,
+    pub dstAccessMask: u32,
+    pub oldLayout: u32,
+    pub newLayout: u32,
+    pub srcQueueFamilyIndex: u32,
+    pub dstQueueFamilyIndex: u32,
+    pub image: *mut Image,
+    pub subresourceRange: ImageSubresourceRange,
+}
+
+#[repr(C)]
+pub struct Offset3D {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+
+#[repr(C)]
+pub struct BufferImageCopy {
+    pub bufferOffset: u64,
+    pub bufferRowLength: u32,
+    pub bufferImageHeight: u32,
+    pub imageSubresource: ImageSubresourceLayers,
+    pub imageOffset: Offset3D,
+    pub imageExtent: Extent3D,
+}
+
+#[repr(C)]
+pub struct ImageSubresourceLayers {
+    pub aspectMask: u32,
+    pub mipLevel: u32,
+    pub baseArrayLayer: u32,
+    pub layerCount: u32,
+}
+
 pub type PFN_vkVoidFunction = Option<unsafe extern "C" fn()>;
 pub type vkReallocationFunction = unsafe extern "C" fn(
     pUserData: *mut void,
@@ -1433,7 +1506,6 @@ pub type vkCreateImage = unsafe extern "C" fn(
     pImage: *mut *mut Image,
 ) -> i32;
 pub type PFN_vkCreateImage = Option<vkCreateImage>;
-
 pub type vkGetImageMemoryRequirements = unsafe extern "C" fn(
     device: *mut Device,
     image: *mut Image,
@@ -1650,10 +1722,43 @@ pub type vkCmdBindVertexBuffers = unsafe extern "C" fn(
     pBuffers: *const *mut Buffer,
     pOffsets: *const u64,
 );
-pub type PFN_vkCmdBindVertexBuffers = ::std::option::Option<vkCmdBindVertexBuffers>;
+pub type PFN_vkCmdBindVertexBuffers = Option<vkCmdBindVertexBuffers>;
 pub type vkResetFences = unsafe extern "C" fn(
     device: *mut Device,
     fenceCount: u32,
     pFences: *const *mut Fence
 ) -> i32;
-pub type PFN_vkResetFences = ::std::option::Option<vkResetFences>;
+pub type PFN_vkResetFences = Option<vkResetFences>;
+pub type vkCmdPipelineBarrier = unsafe extern "C" fn(
+    commandBuffer: *mut CommandBuffer,
+    srcStageMask: u32,
+    dstStageMask: u32,
+    dependencyFlags: u32,
+    memoryBarrierCount: u32,
+    pMemoryBarriers: *const *mut MemoryBarrier,
+    bufferMemoryBarrierCount: u32,
+    pBufferMemoryBarriers: *const *mut BufferMemoryBarrier,
+    imageMemoryBarrierCount: u32,
+    pImageMemoryBarriers: *const ImageMemoryBarrier,
+);
+pub type PFN_vkCmdPipelineBarrier = ::std::option::Option<vkCmdPipelineBarrier>;
+pub type vkFreeCommandBuffers = unsafe extern "C" fn(
+    device: *mut Device,
+    commandPool: *mut CommandPool,
+    commandBufferCount: u32,
+    pCommandBuffers: *const *mut CommandBuffer,
+);
+pub type PFN_vkFreeCommandBuffers = ::std::option::Option<vkFreeCommandBuffers>;
+pub type vkQueueWaitIdle = unsafe extern "C" fn(
+    queue: *mut Queue,
+) -> u32;
+pub type PFN_vkQueueWaitIdle = ::std::option::Option<vkQueueWaitIdle>;
+pub type vkCmdCopyBufferToImage = unsafe extern "C" fn(
+    commandBuffer: *mut CommandBuffer,
+    srcBuffer: *mut Buffer,
+    dstImage: *mut Image,
+    dstImageLayout: u32,
+    regionCount: u32,
+    pRegions: *const BufferImageCopy,
+);
+pub type PFN_vkCmdCopyBufferToImage = ::std::option::Option<vkCmdCopyBufferToImage>;
