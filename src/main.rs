@@ -1,5 +1,6 @@
 use engine::renderer::wayland;
 use engine::renderer::vulkan;
+use engine::font;
 
 pub fn main() {
     let window = wayland::init("Engine name", 1920, 1080).unwrap();
@@ -7,7 +8,15 @@ pub fn main() {
     let surface = vulkan::surface(&instance, window.display, window.surface).unwrap();
     let device = vulkan::device(&instance, surface).unwrap();
     let graphics_pipeline = vulkan::graphics_pipeline(&device, &instance).unwrap();
-    let mut swapchain = vulkan::swapchain(&device, &graphics_pipeline, window.width, window.height).unwrap();
+    let font = font::init("assets/fonts/font.ttf", &[b'a', b'b', b'c', b'd', b'e', b'f']).unwrap();
+
+    let mut swapchain = vulkan::swapchain(
+        &device,
+        &graphics_pipeline,
+        font,
+        window.width,
+        window.height
+    ).unwrap();
 
     for i in 0..swapchain.command_buffers.len() {
         vulkan::record_command_buffer(&device, &swapchain, &graphics_pipeline, i as u32);

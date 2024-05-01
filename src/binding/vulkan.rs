@@ -42,12 +42,34 @@ pub const STRUCTURE_TYPE_SUBMIT_INFO: u32 = 4;
 pub const STRUCTURE_TYPE_PRESENT_INFO_KHR: u32 = 1000001001;
 pub const STRUCTURE_TYPE_BUFFER_CREATE_INFO: u32 = 12;
 pub const STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER: u32 = 45;
+pub const STRUCTURE_TYPE_SAMPLER_CREATE_INFO: u32 = 31;
+pub const STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO: u32 = 34;
+pub const STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET: u32 = 35;
 
 pub const QUEUE_FAMILY_IGNORED: u32 = 0;
 pub const IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: u32 = 7;
 
+pub const FILTER_LINEAR: u32 = 1;
+
+pub const SAMPLER_ADDRESS_MODE_REPEAT: u32 = 0;
+pub const SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER: u32 = 3;
+
+pub const BORDER_COLOR_INT_OPAQUE_BLACK: u32 = 3;
+pub const COMPARE_OP_ALWAYS: u32 = 7;
+pub const DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: u32 = 1;
+pub const SAMPLER_MIPMAP_MODE_LINEAR: u32 = 1;
+
 pub const SUBOPTIMAL_KHR: i32 = 1000001003;
 pub const OUT_OF_DATE_KHR: i32 = -1000001004;
+
+pub const ACCESS_TRANSFER_READ_BIT: u32 = 2048;
+pub const ACCESS_TRANSFER_WRITE_BIT: u32 = 4096;
+
+pub const PIPELINE_STAGE_TOP_OF_PIPE_BIT: u32 = 1;
+pub const PIPELINE_STAGE_TRANSFER_BIT: u32 = 4096;
+pub const IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL: u32 = 5;
+pub const PIPELINE_STAGE_FRAGMENT_SHADER_BIT: u32 = 128;
+pub const ACCESS_SHADER_READ_BIT: u32 = 32;
 
 pub const MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 2;
 pub const MEMORY_PROPERTY_HOST_COHERENT_BIT: u32 = 4;
@@ -78,8 +100,9 @@ pub const COMPONENT_SWIZZLE_IDENTITY: u32 = 0;
 pub const SHARING_MODE_EXCLUSIVE: u32 = 0;
 pub const SHARING_MODE_CONCURRENT: u32 = 1;
 
-pub const BUFFER_USAGE_VERTEX_BUFFER_BIT: u32 = 128;
 pub const BUFFER_USAGE_TRANSFER_SRC_BIT: u32 = 1;
+pub const BUFFER_USAGE_UNIFORM_BUFFER_BIT: u32 = 16;
+pub const BUFFER_USAGE_VERTEX_BUFFER_BIT: u32 = 128;
 
 pub const PRESENT_MODE_FIFO_KHR: u32 = 2;
 
@@ -127,6 +150,7 @@ pub const FRONT_FACE_COUNTER_CLOCKWISE: u32 = 0;
 pub const CULL_MODE_BACK_BIT: u32 = 2;
 
 pub const R8_UNORM: u32 = 9;
+pub const R8G8_UNORM: u32 = 16;
 pub const R8G8B8A8_SRGB: u32 = 43;
 pub const R32G32B32_SFLOAT: u32 = 106;
 pub const R32G32_SFLOAT: u32 = 103;
@@ -861,9 +885,9 @@ pub struct DescriptorPoolCreateInfo {
 pub struct DescriptorSetAllocateInfo {
     pub sType: u32,
     pub pNext: *const void,
-    pub descriptorPool: DescriptorPool,
+    pub descriptorPool: *mut DescriptorPool,
     pub descriptorSetCount: u32,
-    pub pSetLayouts: *const DescriptorSetLayout,
+    pub pSetLayouts: *const *mut DescriptorSetLayout,
 }
 
 #[repr(C)]
@@ -1232,6 +1256,105 @@ pub struct ImageSubresourceLayers {
     pub layerCount: u32,
 }
 
+#[repr(C)]
+pub struct SamplerCreateInfo {
+    pub sType: u32,
+    pub pNext: *const void,
+    pub flags: u32,
+    pub magFilter: u32,
+    pub minFilter: u32,
+    pub mipmapMode: u32,
+    pub addressModeU: u32,
+    pub addressModeV: u32,
+    pub addressModeW: u32,
+    pub mipLodBias: f32,
+    pub anisotropyEnable: u32,
+    pub maxAnisotropy: f32,
+    pub compareEnable: u32,
+    pub compareOp: u32,
+    pub minLod: f32,
+    pub maxLod: f32,
+    pub borderColor: u32,
+    pub unnormalizedCoordinates: u32,
+}
+
+#[repr(C)]
+pub struct WriteDescriptorSet {
+    pub sType: u32,
+    pub pNext: *const void,
+    pub dstSet: *mut DescriptorSet,
+    pub dstBinding: u32,
+    pub dstArrayElement: u32,
+    pub descriptorCount: u32,
+    pub descriptorType: u32,
+    pub pImageInfo: *const DescriptorImageInfo,
+    pub pBufferInfo: *const DescriptorBufferInfo,
+    pub pTexelBufferView: *const BufferView,
+}
+
+#[repr(C)]
+pub struct BufferView {
+    _unused: [u8; 0],
+}
+
+#[repr(C)]
+pub struct DescriptorBufferInfo {
+    pub buffer: *mut Buffer,
+    pub offset: u64,
+    pub range: u64,
+}
+
+#[repr(C)]
+pub struct DescriptorImageInfo {
+    pub sampler: *mut Sampler,
+    pub imageView: *mut ImageView,
+    pub imageLayout: u32,
+}
+
+#[repr(C)]
+pub struct CopyDescriptorSet {
+    pub sType: u32,
+    pub pNext: *const void,
+    pub srcSet: *mut DescriptorSet,
+    pub srcBinding: u32,
+    pub srcArrayElement: u32,
+    pub dstSet: *mut DescriptorSet,
+    pub dstBinding: u32,
+    pub dstArrayElement: u32,
+    pub descriptorCount: u32,
+}
+
+#[repr(C)]
+pub struct CopyBufferToImageInfo2 {
+    pub sType: u32,
+    pub pNext: *const void,
+    pub srcBuffer: *mut Buffer,
+    pub dstImage: *mut Image,
+    pub dstImageLayout: u32,
+    pub regionCount: u32,
+    pub pRegions: *const BufferImageCopy2,
+}
+
+#[repr(C)]
+pub struct BufferImageCopy2 {
+    pub sType: u32,
+    pub pNext: *const void,
+    pub bufferOffset: u64,
+    pub bufferRowLength: u32,
+    pub bufferImageHeight: u32,
+    pub imageSubresource: ImageSubresourceLayers,
+    pub imageOffset: Offset3D,
+    pub imageExtent: Extent3D,
+}
+
+#[repr(C)]
+pub struct VkImageSubresourceLayers {
+    pub aspectMask: u32,
+    pub mipLevel: u32,
+    pub baseArrayLayer: u32,
+    pub layerCount: u32,
+}
+
 pub type PFN_vkVoidFunction = Option<unsafe extern "C" fn()>;
 pub type vkReallocationFunction = unsafe extern "C" fn(
     pUserData: *mut void,
@@ -1403,7 +1526,7 @@ pub type vkCreateDescriptorPool = unsafe extern "C" fn(
 ) -> i32;
 pub type PFN_vkCreateDescriptorPool = Option<vkCreateDescriptorPool>;
 pub type vkAllocateDescriptorSets = unsafe extern "C" fn(
-    device: Device,
+    device: *mut Device,
     pAllocateInfo: *const DescriptorSetAllocateInfo,
     pDescriptorSets: *mut *mut DescriptorSet,
 ) -> i32;
@@ -1762,3 +1885,35 @@ pub type vkCmdCopyBufferToImage = unsafe extern "C" fn(
     pRegions: *const BufferImageCopy,
 );
 pub type PFN_vkCmdCopyBufferToImage = ::std::option::Option<vkCmdCopyBufferToImage>;
+pub type vkCreateSampler = unsafe extern "C" fn(
+    device: *mut Device,
+    pCreateInfo: *const SamplerCreateInfo,
+    pAllocator: *const AllocationCallbacks,
+    pSampler: *mut *mut Sampler,
+) -> u32;
+pub type PFN_vkCreateSampler = ::std::option::Option<vkCreateSampler>;
+pub type vkUpdateDescriptorSets = unsafe extern "C" fn(
+    device: *mut Device,
+    descriptorWriteCount: u32,
+    pDescriptorWrites: *const WriteDescriptorSet,
+    descriptorCopyCount: u32,
+    pDescriptorCopies: *const CopyDescriptorSet,
+);
+pub type PFN_vkUpdateDescriptorSets = ::std::option::Option<vkUpdateDescriptorSets>;
+pub type vkDestroySampler =unsafe extern "C" fn(
+    device: *mut Device,
+    sampler: *mut Sampler,
+    pAllocator: *const AllocationCallbacks,
+);
+pub type PFN_vkDestroySampler = ::std::option::Option<vkDestroySampler>;
+pub type vkCmdBindDescriptorSets = unsafe extern "C" fn(
+    commandBuffer: *mut CommandBuffer,
+    pipelineBindPoint: u32,
+    layout: *mut PipelineLayout,
+    firstSet: u32,
+    descriptorSetCount: u32,
+    pDescriptorSets: *const *mut DescriptorSet,
+    dynamicOffsetCount: u32,
+    pDynamicOffsets: *const u32,
+);
+pub type PFN_vkCmdBindDescriptorSets = ::std::option::Option<vkCmdBindDescriptorSets>;
