@@ -8,7 +8,7 @@ pub fn main() {
     let surface = vulkan::surface(&instance, window.display, window.surface).unwrap();
     let device = vulkan::device(&instance, surface).unwrap();
     let graphics_pipeline = vulkan::graphics_pipeline(&device, &instance).unwrap();
-    let font = font::init("assets/fonts/font.ttf", &[b'a', b'b', b'c', b'd', b'e', b'f']).unwrap();
+    let font = font::init("assets/fonts/font.ttf", &[b'%', b'a', b'b', b'c', b'd', b'e', b'f'], 100).unwrap();
 
     let mut swapchain = vulkan::swapchain(
         &device,
@@ -17,10 +17,6 @@ pub fn main() {
         window.width,
         window.height
     ).unwrap();
-
-    for i in 0..swapchain.command_buffers.len() {
-        vulkan::record_command_buffer(&device, &swapchain, &graphics_pipeline, i as u32);
-    }
 
     while window.running {
         if let Err(e) = vulkan::draw_frame(&device, &swapchain) {

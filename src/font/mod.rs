@@ -1,6 +1,6 @@
 use std::io::{ Seek, Read, BufReader};
 
-const INTERPOLATIONS: u32 = 8;
+const INTERPOLATIONS: u32 = 5;
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -182,7 +182,7 @@ fn read(reader: &mut BufReader<std::fs::File>, len: usize) -> Result<u32, ParseE
     Ok(variable)
 }
 
-pub fn init(file_path: &str, code_points: &[u8]) -> Result<TrueTypeFont, ParseError> {
+pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFont, ParseError> {
     let file = std::fs::File::open(file_path).map_err(|_| ParseError::FailToParse)?;
     let mut reader = BufReader::new(file);
 
@@ -244,8 +244,15 @@ pub fn init(file_path: &str, code_points: &[u8]) -> Result<TrueTypeFont, ParseEr
     }
 
     if let (Some(cmap), Some(header)) = (cmap, header) {
-        let glyph_width: u32 = try_usize(header.x_max - header.x_min)? + 1;
-        let glyph_height: u32 = try_usize(header.y_max - header.y_min)? + 1;
+        let factor = size as f32 / header.units_pem as f32;
+
+        let x_max = (header.x_max as f32 * factor) as i16;
+        let x_min = (header.x_min as f32 * factor) as i16;
+        let y_max = (header.y_max as f32 * factor) as i16;
+        let y_min = (header.y_min as f32 * factor) as i16;
+
+        let glyph_width: u32 = (x_max - x_min) as u32 + 1;
+        let glyph_height: u32 = (y_max - y_min) as u32 + 1;
 
         let (glyphs_width_unit, glyphs_height_unit) = {
             let len = code_points.len() as f32;
@@ -261,17 +268,12 @@ pub fn init(file_path: &str, code_points: &[u8]) -> Result<TrueTypeFont, ParseEr
         let texture_size: u32 = width * height;
         let mut texture: Vec<u8> = vec![0; texture_size as usize];
 
-        let boundary = [header.x_min, header.x_max, header.y_min, header.y_max];
-
-        println!("texture size: {}, {}", width, height);
-        println!("glyphs size: {}, {}", glyph_width, glyph_height);
-        println!("unit: {}, {}", glyphs_width_unit, glyphs_height_unit);
+        let boundary = [x_min, x_max, y_min, y_max];
 
         for (i, code_point) in code_points.iter().enumerate() {
             let index = get_index(&cmap, *code_point);
             let x_offset: u32 = glyph_width * (i as u32 % glyphs_width_unit) as u32;
             let y_offset: u32 = glyph_height * (i as u32 / glyphs_width_unit) as u32;
-            println!("offset: {}, {}", x_offset, y_offset);
 
             add_glyph(
                 &mut texture,
@@ -283,6 +285,7 @@ pub fn init(file_path: &str, code_points: &[u8]) -> Result<TrueTypeFont, ParseEr
                 width,
                 x_offset,
                 y_offset,
+                factor,
                 boundary,
             );
         }
@@ -310,6 +313,7 @@ fn add_glyph(
     texture_width: u32,
     x_offset: u32,
     y_offset: u32,
+    factor: f32,
     boundary: [i16; 4],
 ) {
     let translate = index_to_loc * 2;
@@ -325,6 +329,7 @@ fn add_glyph(
         texture_width,
         x_offset,
         y_offset,
+        factor,
         boundary,
     ).unwrap();
 }
@@ -343,6 +348,7 @@ fn read_simple_glyph(
     texture_width: u32,
     x_offset: u32,
     y_offset: u32,
+    factor: f32,
     boundary: [i16; 4],
 ) -> Result<(), ParseError> {
     reader.seek(std::io::SeekFrom::Current(8)).unwrap();
@@ -400,7 +406,7 @@ fn read_simple_glyph(
         }
 
         points.push(Point {
-            x: x_value,
+            x: (x_value as f32 * factor) as i16,
             y: 0,
             on_curve: flags[i] & ON_CURVE != 0,
         });
@@ -421,7 +427,7 @@ fn read_simple_glyph(
             y_value += read(reader, 2).unwrap() as i16;
         }
 
-        points[i].y = y_value;
+        points[i].y = (y_value as f32 * factor) as i16;
     }
 
     let width: u32 = try_usize(boundary[1] - boundary[0])? + 1;
@@ -472,6 +478,10 @@ fn modify_texture(
                 continue;
             }
 
+            // if i >= contour_start + 2 {
+            //     break;
+            // }
+
             let mut index_of_next = if i == *contour_end as u8 {
                 contour_start
             } else {
@@ -480,6 +490,10 @@ fn modify_texture(
 
             let mut out_points_count: usize = 0;
             while !points[index_of_next as usize].on_curve {
+                // texture[
+                //     (try_usize(points[index_of_next as usize].x - x_min).unwrap() + x_offset) as usize +
+                //     (try_usize(points[index_of_next as usize].y - y_min).unwrap() + y_offset) as usize * texture_width as usize
+                // ] = 50;
                 out_points[out_points_count] = [
                     try_usize(points[index_of_next as usize].x - x_min).unwrap() + x_offset,
                     try_usize(points[index_of_next as usize].y - y_min).unwrap() + y_offset,
@@ -499,8 +513,10 @@ fn modify_texture(
 
             let x1: u32 = try_usize(points[index_of_next as usize].x - x_min).unwrap() + x_offset;
             let y1: u32 = try_usize(points[index_of_next as usize].y - y_min).unwrap() + y_offset;
+            // println!("from: ({}; {}) to: ({}; {}), outs: {:?}, len: {}", x0, y0, x1, y1, out_points, out_points_count);
 
             if out_points_count == 0 {
+                // texture[x0 as usize + y0 as usize * texture_width as usize] = 255;
                 draw_line([x0, y0], [x1, y1], texture_width, texture);
             } else {
                 let mut previous_x: u32 = x0;
@@ -516,19 +532,22 @@ fn modify_texture(
                 for iter in 1..INTERPOLATIONS + 1 {
                     let t: f32 = iter as f32 / INTERPOLATIONS as f32;
 
-                    let mut ptx: u32 = 0;
-                    let mut pty: u32 = 0;
+                    let mut ptx: f32 = 0.0;
+                    let mut pty: f32 = 0.0;
 
                     for index in 0..len + 1 {
                         let bin: f32 = factorial(len) as f32 / (factorial(index) * factorial(len - index)) as f32;
-                        let tm: f32 = (1.0 - t).powf((len - index) as f32);
-                        let tt: f32 = t.powf(index as f32);
+                        let tm: f32 = pow(1.0 - t, (len - index) as f32);
+                        let tt: f32 = pow(t, index as f32);
 
-                        ptx += (bin * tm * tt * coeficients[index][0] as f32).round() as u32;
-                        pty += (bin * tm * tt * coeficients[index][1] as f32).round() as u32;
+                        ptx += bin * tm * tt * coeficients[index][0] as f32;
+                        pty += bin * tm * tt * coeficients[index][1] as f32;
                     }
 
+                    let ptx = ptx.round() as u32;
+                    let pty = pty.round() as u32;
                     draw_line([previous_x, previous_y], [ptx, pty], texture_width, texture);
+                    // texture[previous_x as usize + previous_y as usize * texture_width as usize] = 255;
 
                     previous_x = ptx;
                     previous_y = pty;
@@ -606,6 +625,14 @@ fn modify_texture(
         if last >= points_to_fill.len() {
             break;
         }
+    }
+}
+
+fn pow(base: f32, expoent: f32) -> f32 {
+    if expoent < 0.05 {
+        1.0
+    } else {
+        base.powf(expoent)
     }
 }
 

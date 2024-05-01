@@ -3,6 +3,7 @@
 use crate::binding::dl;
 use crate::binding::vulkan;
 use crate::binding::wayland;
+
 use crate::font::TrueTypeFont;
 
 macro_rules! instance_function {
@@ -134,6 +135,7 @@ pub struct GraphicsPipeline {
     handle: *mut vulkan::Pipeline,
     layout: *mut vulkan::PipelineLayout,
     render_pass: *mut vulkan::RenderPass,
+
     global_descriptor_pool: *mut vulkan::DescriptorPool,
     global_descriptor_set_layout: *mut vulkan::DescriptorSetLayout,
     texture_descriptor_pool: *mut vulkan::DescriptorPool,
@@ -453,6 +455,7 @@ pub fn device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR) -> Result<D
 fn avaliate_device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR, required_device_extension: &std::ffi::CStr, physical_device: *mut vulkan::PhysicalDevice) -> [u32; 5] {
     let mut ans: [u32; 5] = [0; 5];
     let mut count: u32 = 0;
+
     unsafe { (dispatch.vkEnumerateDeviceExtensionProperties)(physical_device, std::ptr::null(), &mut count as *mut u32, std::ptr::null_mut()) };
 
     let mut extension_properties: Vec<vulkan::ExtensionProperties> = Vec::with_capacity(count as usize);
@@ -477,6 +480,7 @@ fn avaliate_device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR, requir
     unsafe { (dispatch.vkGetPhysicalDeviceQueueFamilyProperties)(physical_device, &mut count as *mut u32, std::ptr::null_mut()) };
 
     let mut family_properties: Vec<vulkan::QueueFamilyProperties> = Vec::with_capacity(count as usize);
+
     unsafe { family_properties.set_len(count as usize) };
     unsafe { (dispatch.vkGetPhysicalDeviceQueueFamilyProperties)(physical_device, &mut count as *mut u32, family_properties.as_mut_ptr() as *mut vulkan::QueueFamilyProperties) };
 
@@ -511,6 +515,7 @@ fn avaliate_device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR, requir
 
     unsafe { (dispatch.vkGetPhysicalDeviceFeatures)(physical_device, features.as_mut_ptr()) };
     unsafe { (dispatch.vkGetPhysicalDeviceProperties)(physical_device, properties.as_mut_ptr()) };
+
     let features = unsafe { features.assume_init() };
     let properties = unsafe { properties.assume_init() };
 
@@ -1257,7 +1262,7 @@ pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, font: Tr
         return Err(LoadError::SyncMemberFailed);
     }
 
-    let index = 1;
+    let index = 2;
     let normalized_glyph_width: f32 = font.glyph_width as f32 / font.width as f32;
     let normalized_glyph_height: f32 = font.glyph_height as f32 / font.height as f32;
     let glyph_x_pos = (index % font.glyphs_per_row) as f32 * normalized_glyph_width;
@@ -1534,6 +1539,20 @@ pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, font: Tr
 
     unsafe { (device.vkUpdateDescriptorSets)(device.handle, 1, &uniform_write_descriptor_set as *const vulkan::WriteDescriptorSet, 0, std::ptr::null()) };
 
+    for i in 0..count {
+        record_command_buffer(
+            device,
+            command_buffers[i as usize],
+            framebuffers[i as usize],
+            vertex_buffer.handle,
+            uniform_descriptor_set,
+            texture_descriptor_set,
+            &extent,
+            graphics_pipeline,
+            i
+        );
+    }
+
     Ok(Swapchain {
         handle,
         image_views,
@@ -1797,13 +1816,33 @@ pub fn recreate_swapchain(device: &Device, swapchain: &mut Swapchain, graphics_p
         unsafe { (device.vkCreateFramebuffer)(device.handle, &framebuffer_info as *const vulkan::FramebufferCreateInfo, std::ptr::null(), &mut framebuffer as *mut *mut vulkan::Framebuffer) };
 
         swapchain.framebuffers[i as usize] = framebuffer;
-        record_command_buffer(device, swapchain, graphics_pipeline, i);
+        record_command_buffer(
+            device,
+            swapchain.command_buffers[i as usize],
+            swapchain.framebuffers[i as usize],
+            swapchain.vertex_buffer.handle,
+            swapchain.uniform_descriptor_set,
+            swapchain.texture_descriptor_set,
+            &swapchain.extent,
+            graphics_pipeline,
+            i
+        );
     }
 
     Ok(())
 }
 
-pub fn record_command_buffer(device: &Device, swapchain: &Swapchain, graphics_pipeline: &GraphicsPipeline, image_index: u32) {
+pub fn record_command_buffer(
+    device: &Device,
+    command_buffer: *mut vulkan::CommandBuffer,
+    framebuffer: *mut vulkan::Framebuffer,
+    vertex_buffer: *mut vulkan::Buffer,
+    uniform_descriptor_set: *mut vulkan::DescriptorSet,
+    texture_descriptor_set: *mut vulkan::DescriptorSet,
+    extent: &vulkan::Extent2D,
+    graphics_pipeline: &GraphicsPipeline,
+    image_index: u32
+) {
     let begin_info = vulkan::CommandBufferBeginInfo {
         sType: vulkan::STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         pNext: std::ptr::null(),
@@ -1811,7 +1850,7 @@ pub fn record_command_buffer(device: &Device, swapchain: &Swapchain, graphics_pi
         pInheritanceInfo: std::ptr::null(),
     };
 
-    unsafe { (device.vkBeginCommandBuffer)(swapchain.command_buffers[image_index as usize], &begin_info as *const vulkan::CommandBufferBeginInfo) };
+    unsafe { (device.vkBeginCommandBuffer)(command_buffer, &begin_info as *const vulkan::CommandBufferBeginInfo) };
 
     let clear_color = vulkan::ClearValue {
         color: vulkan::ClearColorValue {
@@ -1830,51 +1869,51 @@ pub fn record_command_buffer(device: &Device, swapchain: &Swapchain, graphics_pi
         sType: vulkan::STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         pNext: std::ptr::null(),
         renderPass: graphics_pipeline.render_pass,
-        framebuffer: swapchain.framebuffers[image_index as usize],
+        framebuffer: framebuffer,
         renderArea: vulkan::Rect2D {
             offset: vulkan::Offset2D {
                 x: 0,
                 y: 0,
             },
             extent: vulkan::Extent2D {
-                width: swapchain.extent.width,
-                height: swapchain.extent.height,
+                width: extent.width,
+                height: extent.height,
             },
         },
         clearValueCount: 2,
         pClearValues: [clear_color, depth_stencil].as_ptr() as *const vulkan::ClearValue
     };
 
-    unsafe { (device.vkCmdBeginRenderPass)(swapchain.command_buffers[image_index as usize], &render_pass_info as *const vulkan::RenderPassBeginInfo, vulkan::SUBPASS_CONTENTS_INLINE) };
-    unsafe { (device.vkCmdBindPipeline)(swapchain.command_buffers[image_index as usize], vulkan::PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline.handle) };
+    unsafe { (device.vkCmdBeginRenderPass)(command_buffer, &render_pass_info as *const vulkan::RenderPassBeginInfo, vulkan::SUBPASS_CONTENTS_INLINE) };
+    unsafe { (device.vkCmdBindPipeline)(command_buffer, vulkan::PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline.handle) };
 
     let viewport = vulkan::Viewport {
         x: 0.0,
         y: 0.0,
-        width: swapchain.extent.width as f32,
-        height: swapchain.extent.height as f32,
+        width: extent.width as f32,
+        height: extent.height as f32,
         minDepth: 0.0,
         maxDepth: 1.0,
     };
 
-    unsafe { (device.vkCmdSetViewport)(swapchain.command_buffers[image_index as usize], 0, 1, &viewport as *const vulkan::Viewport) };
+    unsafe { (device.vkCmdSetViewport)(command_buffer, 0, 1, &viewport as *const vulkan::Viewport) };
     let scissor = vulkan::Rect2D {
         offset: vulkan::Offset2D {
             x: 0,
             y: 0,
         },
         extent: vulkan::Extent2D {
-            width: swapchain.extent.width,
-            height: swapchain.extent.height,
+            width: extent.width,
+            height: extent.height,
         }
     };
 
-    unsafe { (device.vkCmdSetScissor)(swapchain.command_buffers[image_index as usize], 0, 1, &scissor as *const vulkan::Rect2D) };
-    unsafe { (device.vkCmdBindVertexBuffers)(swapchain.command_buffers[image_index as usize], 0, 1, &swapchain.vertex_buffer.handle as *const *mut vulkan::Buffer, [0].as_ptr()) };
-    unsafe { (device.vkCmdBindDescriptorSets)(swapchain.command_buffers[image_index as usize], vulkan::PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline.layout, 0, 2, [swapchain.uniform_descriptor_set, swapchain.texture_descriptor_set].as_ptr() as *const *mut vulkan::DescriptorSet, 0, std::ptr::null()) };
-    unsafe { (device.vkCmdDraw)(swapchain.command_buffers[image_index as usize], 6, 1, 0, 0) };
-    unsafe { (device.vkCmdEndRenderPass)(swapchain.command_buffers[image_index as usize]) };
-    if 0 != unsafe { (device.vkEndCommandBuffer)(swapchain.command_buffers[image_index as usize]) } {}
+    unsafe { (device.vkCmdSetScissor)(command_buffer, 0, 1, &scissor as *const vulkan::Rect2D) };
+    unsafe { (device.vkCmdBindVertexBuffers)(command_buffer, 0, 1, &vertex_buffer as *const *mut vulkan::Buffer, [0].as_ptr()) };
+    unsafe { (device.vkCmdBindDescriptorSets)(command_buffer, vulkan::PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline.layout, 0, 2, [uniform_descriptor_set, texture_descriptor_set].as_ptr() as *const *mut vulkan::DescriptorSet, 0, std::ptr::null()) };
+    unsafe { (device.vkCmdDraw)(command_buffer, 6, 1, 0, 0) };
+    unsafe { (device.vkCmdEndRenderPass)(command_buffer) };
+    if 0 != unsafe { (device.vkEndCommandBuffer)(command_buffer) } {}
 }
 
 pub fn sync(device: &Device, swapchain: &Swapchain) {
