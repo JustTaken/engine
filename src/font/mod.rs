@@ -11,6 +11,7 @@ pub enum ParseError {
     InvalidValue,
 }
 
+#[allow(dead_code)]
 struct Table {
     name: [u8; 4],
     checksum: u32,
@@ -27,6 +28,11 @@ pub struct TrueTypeFont {
     pub glyphs_per_row: u32,
 }
 
+struct Glyph {
+    contour_ends: Vec<u16>,
+    points: Vec<Point>,
+}
+
 struct Point {
     x: i16,
     y: i16,
@@ -34,29 +40,23 @@ struct Point {
 }
 
 struct Header {
-    version: u32,
-    font_revision: u32,
-    checksum_adjustment: u32,
-    magic_number: u32,
-    flags: u16,
     units_pem: u16,
     x_min: i16,
     x_max: i16,
     y_min: i16,
     y_max: i16,
-    mac_style: u16,
-    lowest_rec_ppem: u16,
-    font_direction_hint: u16,
+    // font_direction_hint: u16,
     index_to_loc_format: u16,
-    glyph_data_format: u16,
 }
 
 fn new_header(reader: &mut BufReader<std::fs::File>) -> Result<Header, ParseError> {
-    let version = read(reader, 4)?;
-    let font_revision = read(reader, 4)?;
-    let checksum_adjustment = read(reader, 4)?;
+    // let version = read(reader, 4)?;
+    // let font_revision = read(reader, 4)?;
+    // let checksum_adjustment = read(reader, 4)?;
+    reader.seek(std::io::SeekFrom::Current(12)).map_err(|_| ParseError::WrongSize)?;
     let magic_number = read(reader, 4)?;
-    let flags = read(reader, 2)? as u16;
+    reader.seek(std::io::SeekFrom::Current(2)).map_err(|_| ParseError::WrongSize)?;
+    // let flags = read(reader, 2)? as u16;
     let units_pem = read(reader, 2)? as u16;
 
     reader.seek(std::io::SeekFrom::Current(16)).map_err(|_| ParseError::WrongSize)?;
@@ -65,20 +65,23 @@ fn new_header(reader: &mut BufReader<std::fs::File>) -> Result<Header, ParseErro
     let y_min = read(reader, 2)? as i16;
     let x_max = read(reader, 2)? as i16;
     let y_max = read(reader, 2)? as i16;
-    let mac_style = read(reader, 2)? as u16;
-    let lowest_rec_ppem = read(reader, 2)? as u16;
-    let font_direction_hint = read(reader, 2)? as u16;
+    reader.seek(std::io::SeekFrom::Current(6)).map_err(|_| ParseError::WrongSize)?;
+    // let mac_style = read(reader, 2)? as u16;
+    // let lowest_rec_ppem = read(reader, 2)? as u16;
+    // let font_direction_hint = read(reader, 2)? as u16;
     let index_to_loc_format = read(reader, 2)? as u16;
-    let glyph_data_format = read(reader, 2)? as u16;
+    // let glyph_data_format = read(reader, 2)? as u16;
 
     if 0x5f0f3cf5 != magic_number {
         Err(ParseError::WrongMagicNumber)
     } else {
         Ok(Header {
-            version, font_revision, checksum_adjustment, magic_number,
-            flags, units_pem, x_min, x_max, y_min, y_max, mac_style,
-            lowest_rec_ppem, font_direction_hint, index_to_loc_format,
-            glyph_data_format,
+            units_pem,
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+            index_to_loc_format,
         })
     }
 }
@@ -195,7 +198,6 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
     let mut cmap: Option<Map> = None;
     let mut header: Option<Header> = None;
 
-    let mut glyphs_count: u32 = 0;
     let mut location_offset: u32 = 0;
     let mut glyph_table_offset: u32 = 0;
 
@@ -231,7 +233,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
                 }
             } else if let TableType::Max = typ {
                 reader.seek(std::io::SeekFrom::Start(table.offset as u64 + 4)).unwrap();
-                glyphs_count = read(&mut reader, 2)?;
+                //let glyphs_count = read(&mut reader, 2)?;
             } else if let TableType::Header = typ {
                 reader.seek(std::io::SeekFrom::Start(table.offset as u64)).unwrap();
                 header = new_header(&mut reader).ok();
@@ -254,7 +256,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
         let glyph_width: u32 = (x_max - x_min) as u32 + 1;
         let glyph_height: u32 = (y_max - y_min) as u32 + 1;
 
-        let (glyphs_width_unit, glyphs_height_unit) = {
+        let (glyphs_per_row, glyphs_per_coloum) = {
             let len = code_points.len() as f32;
             let height: f32 = len.sqrt().floor();
             let width = (len as f32 / height).ceil() as u32;
@@ -262,18 +264,20 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
             (width, height as u32)
         };
 
-        let width = glyph_width * glyphs_width_unit;
-        let height = glyph_height * glyphs_height_unit;
+        let width = glyph_width * glyphs_per_row;
+        let height = glyph_height * glyphs_per_coloum;
 
         let texture_size: u32 = width * height;
         let mut texture: Vec<u8> = vec![0; texture_size as usize];
 
         let boundary = [x_min, x_max, y_min, y_max];
 
+        // let indices = [18, 18];
         for (i, code_point) in code_points.iter().enumerate() {
+            // let index = indices[i as usize];
             let index = get_index(&cmap, *code_point);
-            let x_offset: u32 = glyph_width * (i as u32 % glyphs_width_unit) as u32;
-            let y_offset: u32 = glyph_height * (i as u32 / glyphs_width_unit) as u32;
+            let x_offset: u32 = glyph_width * (i as u32 % glyphs_per_row) as u32;
+            let y_offset: u32 = glyph_height * (i as u32 / glyphs_per_row) as u32;
 
             add_glyph(
                 &mut texture,
@@ -283,9 +287,9 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
                 glyph_table_offset,
                 index,
                 width,
-                x_offset,
-                y_offset,
-                factor,
+                [x_offset, y_offset],
+                [0, 0],
+                [factor, 0.0, 0.0, factor],
                 boundary,
             );
         }
@@ -296,7 +300,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
             height,
             glyph_width,
             glyph_height,
-            glyphs_per_row: glyphs_width_unit,
+            glyphs_per_row: glyphs_per_row,
         })
     } else {
         Err(ParseError::FailToParse)
@@ -311,9 +315,9 @@ fn add_glyph(
     glyph_table_offset: u32,
     code_point: u32,
     texture_width: u32,
-    x_offset: u32,
-    y_offset: u32,
-    factor: f32,
+    quad_offset: [u32; 2],
+    center_offset: [i16; 2],
+    factor_matrix: [f32; 4],
     boundary: [i16; 4],
 ) {
     let translate = index_to_loc * 2;
@@ -321,17 +325,61 @@ fn add_glyph(
     let offset = read(reader, 2 + translate as usize).unwrap() * (((index_to_loc + 1) % 2) + 1);
     reader.seek(std::io::SeekFrom::Start((offset + glyph_table_offset) as u64)).unwrap();
 
+    let width: u32 = try_usize(boundary[1] - boundary[0]).unwrap() + 1;
+    let height: u32 = try_usize(boundary[3] - boundary[2]).unwrap() + 1;
+
     let number_of_contours = read(reader, 2).unwrap() as i16;
-    read_simple_glyph(
-        reader,
-        number_of_contours.try_into().unwrap(),
-        texture,
-        texture_width,
-        x_offset,
-        y_offset,
-        factor,
-        boundary,
-    ).unwrap();
+    reader.seek(std::io::SeekFrom::Current(8)).unwrap();
+
+    if number_of_contours < 0 {
+        let mut flag = MORE_COMPONENTS;
+        let mut last_offset = [0.0, 0.0];
+
+        while flag & MORE_COMPONENTS != 0 {
+            flag = read(reader, 2).unwrap() as u16;
+
+            let index = read(reader, 2).unwrap();
+            let matrix = read_compound_glyph(reader, factor_matrix[0], &mut last_offset, flag);
+            // println!("{}", index);
+            // println!("{:#018b}", flag);
+            // println!("{:?}", matrix);
+            let pos = reader.stream_position().unwrap();
+
+            add_glyph(
+                texture,
+                reader,
+                index_to_loc,
+                location_offset,
+                glyph_table_offset,
+                index,
+                texture_width,
+                quad_offset,
+                [matrix[4] as i16, matrix[5] as i16],
+                [matrix[0], matrix[1], matrix[2], matrix[3]],
+                boundary,
+            );
+
+            reader.seek(std::io::SeekFrom::Start(pos)).unwrap();
+        }
+    } else {
+        let glyph = read_simple_glyph(
+            reader,
+            number_of_contours.try_into().unwrap(),
+            factor_matrix,
+            center_offset,
+        ).unwrap();
+
+        modify_texture(
+            width,
+            height,
+            boundary[0],
+            boundary[2],
+            texture_width,
+            quad_offset,
+            glyph,
+            texture
+        );
+    }
 }
 
 const ON_CURVE: u8 = 0x01;
@@ -344,19 +392,15 @@ const Y_IS_SAME: u8 = 0x20;
 fn read_simple_glyph(
     reader: &mut BufReader<std::fs::File>,
     number_of_contours: u16,
-    texture: &mut Vec<u8>,
-    texture_width: u32,
-    x_offset: u32,
-    y_offset: u32,
-    factor: f32,
-    boundary: [i16; 4],
-) -> Result<(), ParseError> {
-    reader.seek(std::io::SeekFrom::Current(8)).unwrap();
-
+    factor_matrix: [f32; 4],
+    center_offset: [i16; 2],
+    // x_factor: f32,
+    // y_factor: f32,
+) -> Result<Glyph, ParseError> {
     let mut contour_ends: Vec<u16> = Vec::with_capacity(number_of_contours as usize);
     let mut contour_max: u16 = 0;
 
-    for i in 0..number_of_contours {
+    for _ in 0..number_of_contours {
         let contour_end = read(reader, 2)? as u16;
 
         if contour_end + 1 > contour_max {
@@ -406,7 +450,7 @@ fn read_simple_glyph(
         }
 
         points.push(Point {
-            x: (x_value as f32 * factor) as i16,
+            x: (x_value as f32 * factor_matrix[0]) as i16,
             y: 0,
             on_curve: flags[i] & ON_CURVE != 0,
         });
@@ -427,26 +471,65 @@ fn read_simple_glyph(
             y_value += read(reader, 2).unwrap() as i16;
         }
 
-        points[i].y = (y_value as f32 * factor) as i16;
+        points[i].y += (y_value as f32 * factor_matrix[3] + points[i].x as f32 * factor_matrix[1]) as i16 + center_offset[1];
+        points[i].x += (y_value as f32 * factor_matrix[2]) as i16 + center_offset[0];
     }
 
-    let width: u32 = try_usize(boundary[1] - boundary[0])? + 1;
-    let height: u32 = try_usize(boundary[3] - boundary[2])? + 1;
-
-    modify_texture(
-        width,
-        height,
-        boundary[0],
-        boundary[2],
-        texture_width,
-        x_offset,
-        y_offset,
-        points,
+    Ok(Glyph {
         contour_ends,
-        texture
-    );
+        points,
+    })
+}
 
-    Ok(())
+const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
+const ARGS_ARE_XY_VALUES: u16 = 0x0002;
+// const ROUND_XY_TO_GRID: u16 = 0x0004;
+const WE_HAVE_A_SCALE: u16 = 0x0008;
+const MORE_COMPONENTS: u16 = 0x0020;
+const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
+const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
+// const USE_MY_METRICS: u16 = 0x0200;
+// const OVERLAP_COMPONENT: u16 = 0x0400;
+
+fn read_compound_glyph(
+    reader: &mut BufReader<std::fs::File>,
+    factor: f32,
+    last_offset: &mut [f32],
+    flag: u16,
+) -> [f32; 6] {
+        let mut matrix: [f32; 6] = [factor, 0.0, 0.0, factor, 0.0, 0.0];
+
+        if flag & ARG_1_AND_2_ARE_WORDS != 0 && flag & ARGS_ARE_XY_VALUES != 0 {
+            matrix[4] = (read(reader, 2).unwrap() as f32) * factor;
+            matrix[5] = (read(reader, 2).unwrap() as f32) * factor;
+        } else if flag & ARG_1_AND_2_ARE_WORDS == 0 && flag & ARGS_ARE_XY_VALUES != 0{
+            matrix[4] = (read(reader, 1).unwrap() as f32) * factor;
+            matrix[5] = (read(reader, 1).unwrap() as f32) * factor;
+        }
+
+        if flag & WE_HAVE_A_SCALE != 0 {
+            matrix[0] = (read(reader, 2).unwrap() as f32 / ((1 as u16) << 14) as f32) * factor;
+            matrix[3] = matrix[0];
+        } else if flag & WE_HAVE_AN_X_AND_Y_SCALE != 0{
+            matrix[0] = (read(reader, 2).unwrap() as f32 / ((1 as u16) << 14) as f32) * factor;
+            matrix[3] = (read(reader, 2).unwrap() as f32 / ((1 as u16) << 14) as f32) * factor;
+        } else if flag & WE_HAVE_A_TWO_BY_TWO != 0 {
+            matrix[0] = (read(reader, 2).unwrap() as f32 / ((1 as u16) << 14) as f32) * factor;
+            matrix[1] = (read(reader, 2).unwrap() as f32 / ((1 as u16) << 14) as f32) * factor;
+            matrix[2] = (read(reader, 2).unwrap() as f32 / ((1 as u16) << 14) as f32) * factor;
+            matrix[3] = (read(reader, 2).unwrap() as f32 / ((1 as u16) << 14) as f32) * factor;
+        }
+
+        if flag & WE_HAVE_INSTRUCTIONS != 0 {
+            matrix[4] += last_offset[0];
+            matrix[5] += last_offset[1];
+        }
+
+        last_offset[0] = matrix[4];
+        last_offset[1] = matrix[5];
+
+        matrix
 }
 
 fn try_usize(integer: i16) -> Result<u32, ParseError> {
@@ -457,24 +540,112 @@ fn try_usize(integer: i16) -> Result<u32, ParseError> {
     }
 }
 
+const MIN_LINE_MATCHES: u8 = 4;
+const HALF_MATCHES: u8 = MIN_LINE_MATCHES / 2;
+
+fn search_blank_point(point: [u32; 2], texture_width: u32, quad_offset: [u32; 2], glyph_boundary: [u32; 2], texture: &mut Vec<u8>) -> Result<[usize; 2], ParseError> {
+    let texture_width: usize = texture_width as usize;
+    let point = [point[0] as usize, point[1] as usize * texture_width];
+
+    let mut down_count: u8 = 0;
+    let mut up_count: u8 = 0;
+
+    let mut down = point[1] + texture_width;
+    let mut up = point[1] - texture_width;
+
+    let mut middle_down: Option<[usize; 2]> = None;
+    let mut middle_up: Option<[usize; 2]> = None;
+
+    let mut up_is_playing = true;
+    let mut down_is_playing = true;
+
+    let mut i: usize = 0;
+    while i < 20 {
+        i += 1;
+        let mut last_x_down: u32 = 0;
+        let mut last_x_up: u32 = 0;
+
+        let mut down_interceptions: u8 = 0;
+        let mut up_interceptions: u8 = 0;
+
+        for i in quad_offset[0]..glyph_boundary[0] + quad_offset[0] {
+            if texture[i as usize + down] != 0 && i - last_x_down > 1 {
+                down_interceptions += 1;
+                last_x_down = i;
+                if down_count == HALF_MATCHES {
+                    middle_down = Some([i as usize - 1, down as usize]);
+                }
+            }
+
+            if texture[i as usize + up] != 0 && i - last_x_up > 1 {
+                up_interceptions += 1;
+                last_x_up = i;
+                if up_count == HALF_MATCHES {
+                    middle_up = Some([i as usize - 1, up as usize]);
+                }
+            }
+        }
+
+        if up_is_playing {
+            if last_x_up > 0 {
+                if up_interceptions % 2 == 0 {
+                    if up_count >= MIN_LINE_MATCHES {
+                        return middle_up.ok_or(ParseError::NoMoreData);
+                    }
+
+                    up_count += 1;
+                } else {
+                    up_count = 0;
+                }
+
+                up -= texture_width;
+            } else {
+                up_is_playing = false;
+            }
+        }
+
+        if down_is_playing {
+            if last_x_down > 0 {
+                if down_interceptions % 2 == 0 {
+                    if down_count >= MIN_LINE_MATCHES {
+                        // return Ok([last_x_down as usize - 1, down]);
+                        return middle_down.ok_or(ParseError::NoMoreData);
+                    }
+
+                    down_count += 1;
+                } else {
+                    down_count = 0;
+                }
+
+                down += texture_width;
+
+            } else {
+                down_is_playing = false;
+            }
+        }
+    }
+
+    Err(ParseError::NoMoreData)
+}
+
 fn modify_texture(
     width: u32,
     height: u32,
     x_min: i16,
     y_min: i16,
     texture_width: u32,
-    x_offset: u32,
-    y_offset: u32,
-    points: Vec<Point>,
-    contour_ends: Vec<u16>,
+    quad_offset: [u32; 2],
+    glyph: Glyph,
     texture: &mut Vec<u8>
 ) {
+    let mut point: Option<[usize; 2]> = None;
     let mut out_points: [[u32; 2]; 10] = [[0; 2]; 10];
     let mut contour_start: u8 = 0;
+    let mut first_curve_point: [u32; 2] = [0; 2];
 
-    for contour_end in contour_ends.iter() {
+    for contour_end in glyph.contour_ends.iter() {
         for i in contour_start..*contour_end as u8 + 1 {
-            if !points[i as usize].on_curve {
+            if !glyph.points[i as usize].on_curve {
                 continue;
             }
 
@@ -489,14 +660,10 @@ fn modify_texture(
             };
 
             let mut out_points_count: usize = 0;
-            while !points[index_of_next as usize].on_curve {
-                // texture[
-                //     (try_usize(points[index_of_next as usize].x - x_min).unwrap() + x_offset) as usize +
-                //     (try_usize(points[index_of_next as usize].y - y_min).unwrap() + y_offset) as usize * texture_width as usize
-                // ] = 50;
+            while !glyph.points[index_of_next as usize].on_curve {
                 out_points[out_points_count] = [
-                    try_usize(points[index_of_next as usize].x - x_min).unwrap() + x_offset,
-                    try_usize(points[index_of_next as usize].y - y_min).unwrap() + y_offset,
+                    try_usize(glyph.points[index_of_next as usize].x - x_min).unwrap() + quad_offset[0],
+                    try_usize(glyph.points[index_of_next as usize].y - y_min).unwrap() + quad_offset[1],
                 ];
 
                 out_points_count += 1;
@@ -508,15 +675,14 @@ fn modify_texture(
                 }
             }
 
-            let x0: u32 = try_usize(points[i as usize].x - x_min).unwrap() + x_offset;
-            let y0: u32 = try_usize(points[i as usize].y - y_min).unwrap() + y_offset;
+            let x0: u32 = try_usize(glyph.points[i as usize].x - x_min).unwrap() + quad_offset[0];
+            let y0: u32 = try_usize(glyph.points[i as usize].y - y_min).unwrap() + quad_offset[1];
+            first_curve_point = [x0, y0];
 
-            let x1: u32 = try_usize(points[index_of_next as usize].x - x_min).unwrap() + x_offset;
-            let y1: u32 = try_usize(points[index_of_next as usize].y - y_min).unwrap() + y_offset;
-            // println!("from: ({}; {}) to: ({}; {}), outs: {:?}, len: {}", x0, y0, x1, y1, out_points, out_points_count);
+            let x1: u32 = try_usize(glyph.points[index_of_next as usize].x - x_min).unwrap() + quad_offset[0];
+            let y1: u32 = try_usize(glyph.points[index_of_next as usize].y - y_min).unwrap() + quad_offset[1];
 
             if out_points_count == 0 {
-                // texture[x0 as usize + y0 as usize * texture_width as usize] = 255;
                 draw_line([x0, y0], [x1, y1], texture_width, texture);
             } else {
                 let mut previous_x: u32 = x0;
@@ -546,8 +712,8 @@ fn modify_texture(
 
                     let ptx = ptx.round() as u32;
                     let pty = pty.round() as u32;
+
                     draw_line([previous_x, previous_y], [ptx, pty], texture_width, texture);
-                    // texture[previous_x as usize + previous_y as usize * texture_width as usize] = 255;
 
                     previous_x = ptx;
                     previous_y = pty;
@@ -555,32 +721,35 @@ fn modify_texture(
             }
         }
 
+        if let None = point {
+            point = search_blank_point(first_curve_point, texture_width, quad_offset, [width, height], texture).ok();
+        }
+
         contour_start = *contour_end as u8 + 1;
     }
 
-    let mut point: Option<[usize; 2]> = None;
+    // 'out: for i in 0..height {
+    //     let mut count: usize = 0;
+    //     let mut last_x: usize = 0;
 
-    'out: for i in 0..height {
-        let mut count: usize = 0;
-        let mut last_x: usize = 0;
+    //     for j in 0..width {
+    //         if texture[(j + quad_offset[0]) as usize + ((i + quad_offset[1]) * texture_width) as usize] != 0 {
+    //             count += 1;
 
-        for j in 0..width {
-            if texture[(j + x_offset) as usize + ((i + y_offset) * texture_width) as usize] != 0 {
-                count += 1;
+    //             if count == 2 {
+    //                 if (j as usize - last_x) > 1 {
+    //                     println!("x: {}, last: {}", j, last_x);
+    //                     point = Some([quad_offset[0] as usize + last_x + 1, ((quad_offset[1] + i) * texture_width) as usize]);
+    //                     break 'out;
+    //                 } else {
+    //                     break;
+    //                 }
+    //             }
 
-                if count == 2 {
-                    if (j as usize - last_x) > 1 {
-                        point = Some([x_offset as usize + last_x + 1, ((y_offset + i) * texture_width) as usize]);
-                        break 'out;
-                    } else {
-                        break;
-                    }
-                }
-
-                last_x = j as usize;
-            }
-        }
-    }
+    //             last_x = j as usize;
+    //         }
+    //     }
+    // }
 
     if let None = point {
         return;
@@ -591,6 +760,7 @@ fn modify_texture(
 
     points_to_fill.push(point);
     texture[point[0] + point[1]] = 255;
+    // println!("pinto: {}, {}", point[0], point[1] / texture_width as usize);
 
     let mut last: usize = 0;
     let texture_width: usize = texture_width as usize;

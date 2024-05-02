@@ -1262,20 +1262,29 @@ pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, font: Tr
         return Err(LoadError::SyncMemberFailed);
     }
 
-    let index = 2;
+    let index = 9;
     let normalized_glyph_width: f32 = font.glyph_width as f32 / font.width as f32;
     let normalized_glyph_height: f32 = font.glyph_height as f32 / font.height as f32;
     let glyph_x_pos = (index % font.glyphs_per_row) as f32 * normalized_glyph_width;
     let glyph_y_pos = (index / font.glyphs_per_row) as f32 * normalized_glyph_height;
 
+    // let vertices: [[f32; 4]; 6] = [
+    //     [-1.0, -1.0, glyph_x_pos, glyph_y_pos + normalized_glyph_height],
+    //     [1.0, -1.0, glyph_x_pos + normalized_glyph_width, glyph_y_pos + normalized_glyph_height],
+    //     [-1.0, 1.0, glyph_x_pos, glyph_y_pos],
+    //     [1.0, -1.0, glyph_x_pos + normalized_glyph_width, glyph_y_pos + normalized_glyph_height],
+    //     [1.0, 1.0, glyph_x_pos + normalized_glyph_width, glyph_y_pos],
+    //     [-1.0, 1.0, glyph_x_pos, glyph_y_pos],
+    // ];
     let vertices: [[f32; 4]; 6] = [
-        [-1.0, -1.0, glyph_x_pos, glyph_y_pos + normalized_glyph_height],
-        [1.0, -1.0, glyph_x_pos + normalized_glyph_width, glyph_y_pos + normalized_glyph_height],
-        [-1.0, 1.0, glyph_x_pos, glyph_y_pos],
-        [1.0, -1.0, glyph_x_pos + normalized_glyph_width, glyph_y_pos + normalized_glyph_height],
-        [1.0, 1.0, glyph_x_pos + normalized_glyph_width, glyph_y_pos],
-        [-1.0, 1.0, glyph_x_pos, glyph_y_pos],
+        [-1.0, -1.0, 0.0, 0.0 + 1.0],
+        [1.0, -1.0, 0.0 + 1.0, 0.0 + 1.0],
+        [-1.0, 1.0, 0.0, 0.0],
+        [1.0, -1.0, 0.0 + 1.0, 0.0 + 1.0],
+        [1.0, 1.0, 0.0 + 1.0, 0.0],
+        [-1.0, 1.0, 0.0, 0.0],
     ];
+
 
     let vertex_buffer = buffer::<[f32; 4]>(device, vulkan::BUFFER_USAGE_VERTEX_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, vertices.len())?;
 
@@ -1549,7 +1558,6 @@ pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, font: Tr
             texture_descriptor_set,
             &extent,
             graphics_pipeline,
-            i
         );
     }
 
@@ -1825,7 +1833,6 @@ pub fn recreate_swapchain(device: &Device, swapchain: &mut Swapchain, graphics_p
             swapchain.texture_descriptor_set,
             &swapchain.extent,
             graphics_pipeline,
-            i
         );
     }
 
@@ -1841,7 +1848,6 @@ pub fn record_command_buffer(
     texture_descriptor_set: *mut vulkan::DescriptorSet,
     extent: &vulkan::Extent2D,
     graphics_pipeline: &GraphicsPipeline,
-    image_index: u32
 ) {
     let begin_info = vulkan::CommandBufferBeginInfo {
         sType: vulkan::STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
