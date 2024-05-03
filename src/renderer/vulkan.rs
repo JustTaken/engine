@@ -1262,11 +1262,11 @@ pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, font: Tr
         return Err(LoadError::SyncMemberFailed);
     }
 
-    let index = 9;
-    let normalized_glyph_width: f32 = font.glyph_width as f32 / font.width as f32;
-    let normalized_glyph_height: f32 = font.glyph_height as f32 / font.height as f32;
-    let glyph_x_pos = (index % font.glyphs_per_row) as f32 * normalized_glyph_width;
-    let glyph_y_pos = (index / font.glyphs_per_row) as f32 * normalized_glyph_height;
+    // let index = 59;
+    // let normalized_glyph_width: f32 = font.glyph_width as f32 / font.width as f32;
+    // let normalized_glyph_height: f32 = font.glyph_height as f32 / font.height as f32;
+    // let glyph_x_pos = (index % font.glyphs_per_row) as f32 * normalized_glyph_width;
+    // let glyph_y_pos = (index / font.glyphs_per_row) as f32 * normalized_glyph_height;
 
     // let vertices: [[f32; 4]; 6] = [
     //     [-1.0, -1.0, glyph_x_pos, glyph_y_pos + normalized_glyph_height],

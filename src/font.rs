@@ -45,7 +45,6 @@ struct Header {
     x_max: i16,
     y_min: i16,
     y_max: i16,
-    // font_direction_hint: u16,
     index_to_loc_format: u16,
 }
 
@@ -68,7 +67,7 @@ fn new_header(reader: &mut BufReader<std::fs::File>) -> Result<Header, ParseErro
     reader.seek(std::io::SeekFrom::Current(6)).map_err(|_| ParseError::WrongSize)?;
     // let mac_style = read(reader, 2)? as u16;
     // let lowest_rec_ppem = read(reader, 2)? as u16;
-    // let font_direction_hint = read(reader, 2)? as u16;
+    // let font_direction_hint = read(reader, 2)? as i16;
     let index_to_loc_format = read(reader, 2)? as u16;
     // let glyph_data_format = read(reader, 2)? as u16;
 
@@ -340,9 +339,6 @@ fn add_glyph(
 
             let index = read(reader, 2).unwrap();
             let matrix = read_compound_glyph(reader, factor_matrix[0], &mut last_offset, flag);
-            // println!("{}", index);
-            // println!("{:#018b}", flag);
-            // println!("{:?}", matrix);
             let pos = reader.stream_position().unwrap();
 
             add_glyph(
@@ -394,8 +390,6 @@ fn read_simple_glyph(
     number_of_contours: u16,
     factor_matrix: [f32; 4],
     center_offset: [i16; 2],
-    // x_factor: f32,
-    // y_factor: f32,
 ) -> Result<Glyph, ParseError> {
     let mut contour_ends: Vec<u16> = Vec::with_capacity(number_of_contours as usize);
     let mut contour_max: u16 = 0;
@@ -459,6 +453,7 @@ fn read_simple_glyph(
     let mut y_value: i16 = 0;
     for i in 0..contour_max {
         let i = i as usize;
+
         if flags[i] & Y_IS_SHORT != 0 {
             let value = read(reader, 1).unwrap() as u8;
 
@@ -540,94 +535,6 @@ fn try_usize(integer: i16) -> Result<u32, ParseError> {
     }
 }
 
-const MIN_LINE_MATCHES: u8 = 4;
-const HALF_MATCHES: u8 = MIN_LINE_MATCHES / 2;
-
-fn search_blank_point(point: [u32; 2], texture_width: u32, quad_offset: [u32; 2], glyph_boundary: [u32; 2], texture: &mut Vec<u8>) -> Result<[usize; 2], ParseError> {
-    let texture_width: usize = texture_width as usize;
-    let point = [point[0] as usize, point[1] as usize * texture_width];
-
-    let mut down_count: u8 = 0;
-    let mut up_count: u8 = 0;
-
-    let mut down = point[1] + texture_width;
-    let mut up = point[1] - texture_width;
-
-    let mut middle_down: Option<[usize; 2]> = None;
-    let mut middle_up: Option<[usize; 2]> = None;
-
-    let mut up_is_playing = true;
-    let mut down_is_playing = true;
-
-    let mut i: usize = 0;
-    while i < 20 {
-        i += 1;
-        let mut last_x_down: u32 = 0;
-        let mut last_x_up: u32 = 0;
-
-        let mut down_interceptions: u8 = 0;
-        let mut up_interceptions: u8 = 0;
-
-        for i in quad_offset[0]..glyph_boundary[0] + quad_offset[0] {
-            if texture[i as usize + down] != 0 && i - last_x_down > 1 {
-                down_interceptions += 1;
-                last_x_down = i;
-                if down_count == HALF_MATCHES {
-                    middle_down = Some([i as usize - 1, down as usize]);
-                }
-            }
-
-            if texture[i as usize + up] != 0 && i - last_x_up > 1 {
-                up_interceptions += 1;
-                last_x_up = i;
-                if up_count == HALF_MATCHES {
-                    middle_up = Some([i as usize - 1, up as usize]);
-                }
-            }
-        }
-
-        if up_is_playing {
-            if last_x_up > 0 {
-                if up_interceptions % 2 == 0 {
-                    if up_count >= MIN_LINE_MATCHES {
-                        return middle_up.ok_or(ParseError::NoMoreData);
-                    }
-
-                    up_count += 1;
-                } else {
-                    up_count = 0;
-                }
-
-                up -= texture_width;
-            } else {
-                up_is_playing = false;
-            }
-        }
-
-        if down_is_playing {
-            if last_x_down > 0 {
-                if down_interceptions % 2 == 0 {
-                    if down_count >= MIN_LINE_MATCHES {
-                        // return Ok([last_x_down as usize - 1, down]);
-                        return middle_down.ok_or(ParseError::NoMoreData);
-                    }
-
-                    down_count += 1;
-                } else {
-                    down_count = 0;
-                }
-
-                down += texture_width;
-
-            } else {
-                down_is_playing = false;
-            }
-        }
-    }
-
-    Err(ParseError::NoMoreData)
-}
-
 fn modify_texture(
     width: u32,
     height: u32,
@@ -638,20 +545,27 @@ fn modify_texture(
     glyph: Glyph,
     texture: &mut Vec<u8>
 ) {
-    let mut point: Option<[usize; 2]> = None;
     let mut out_points: [[u32; 2]; 10] = [[0; 2]; 10];
     let mut contour_start: u8 = 0;
-    let mut first_curve_point: [u32; 2] = [0; 2];
+    let mut first_line: [u32; 4] = [0; 4];
+    let mut contours_inner_points: Vec<[usize; 2]> = Vec::with_capacity(glyph.contour_ends.len());
 
     for contour_end in glyph.contour_ends.iter() {
+        let mut points_first_line: [[u32; 2]; 10] = [[0; 2]; 10];
+        let mut points_first_line_count: usize = 0;
+        let mut first_point_flag = false;
+        let mut delta_y: i32 = 0;
+        let mut delta_x: i32 = 0;
+        let mut clock_wise_sum: u32 = 0;
+        let mut counter_clock_wise_sum: u32 = 0;
+
+        let mut py = 0;
+        let mut px = 0;
+
         for i in contour_start..*contour_end as u8 + 1 {
             if !glyph.points[i as usize].on_curve {
                 continue;
             }
-
-            // if i >= contour_start + 2 {
-            //     break;
-            // }
 
             let mut index_of_next = if i == *contour_end as u8 {
                 contour_start
@@ -677,7 +591,6 @@ fn modify_texture(
 
             let x0: u32 = try_usize(glyph.points[i as usize].x - x_min).unwrap() + quad_offset[0];
             let y0: u32 = try_usize(glyph.points[i as usize].y - y_min).unwrap() + quad_offset[1];
-            first_curve_point = [x0, y0];
 
             let x1: u32 = try_usize(glyph.points[index_of_next as usize].x - x_min).unwrap() + quad_offset[0];
             let y1: u32 = try_usize(glyph.points[index_of_next as usize].y - y_min).unwrap() + quad_offset[1];
@@ -688,6 +601,11 @@ fn modify_texture(
                 let mut previous_x: u32 = x0;
                 let mut previous_y: u32 = y0;
                 let mut coeficients: [[u32; 2]; 12] = [[0; 2]; 12];
+
+                if !first_point_flag {
+                    points_first_line[0] = [x0, y0];
+                    points_first_line_count = 1;
+                }
 
                 coeficients[0] = [x0, y0];
                 coeficients[1..out_points_count as usize + 1].copy_from_slice(&out_points[0..out_points_count as usize]);
@@ -713,87 +631,173 @@ fn modify_texture(
                     let ptx = ptx.round() as u32;
                     let pty = pty.round() as u32;
 
+                    if !first_point_flag {
+                        points_first_line[points_first_line_count] = [ptx, pty];
+                        points_first_line_count += 1;
+                    }
+
                     draw_line([previous_x, previous_y], [ptx, pty], texture_width, texture);
 
                     previous_x = ptx;
                     previous_y = pty;
                 }
             }
+
+            if !first_point_flag {
+                first_line = [x0, y0, x1, y1];
+
+                delta_y = glyph.points[index_of_next as usize].y as i32 - glyph.points[i as usize].y as i32;
+                delta_x = glyph.points[index_of_next as usize].x as i32 - glyph.points[i as usize].x as i32;
+
+                let y_mean = delta_y / 2;
+                let x_mean = delta_x / 2;
+
+                py = glyph.points[i as usize].y + y_mean as i16;
+                px = glyph.points[i as usize].x + x_mean as i16;
+
+                if y_mean != 0 {
+                    first_point_flag = true;
+                }
+            } else {
+                if py == glyph.points[index_of_next as usize].y {
+                    index_of_next = if index_of_next == *contour_end as u8 {
+                        contour_start
+                    } else {
+                        index_of_next + 1
+                    };
+
+                    while !glyph.points[index_of_next as usize].on_curve {
+                        if index_of_next >= *contour_end as u8 {
+                            index_of_next = contour_start;
+                        } else {
+                            index_of_next += 1;
+                        }
+                    }
+                }
+
+                if (py < glyph.points[index_of_next as usize].y && py > glyph.points[i as usize].y)
+                    || (py > glyph.points[index_of_next as usize].y && py < glyph.points[i as usize].y) {
+                    let dx = glyph.points[index_of_next as usize].x as i32 - glyph.points[i as usize].x as i32;
+                    let dy = glyph.points[index_of_next as usize].y as i32 - glyph.points[i as usize].y as i32;
+
+                    if dy != 0 {
+                        let dh: f32 = py as f32 - glyph.points[i as usize].y as f32;
+                        let c = dh / dy as f32;
+                        let x = ((dx as f32 * c) + glyph.points[i as usize].x as f32) as i16;
+
+                        if delta_y > 0 {
+                            if x > px {
+                                clock_wise_sum += 1;
+                            } else {
+                                counter_clock_wise_sum += 1;
+                            }
+                        } else if delta_y < 0 {
+                            if x > px {
+                                counter_clock_wise_sum += 1;
+                            } else {
+                                clock_wise_sum += 1;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
-        if let None = point {
-            point = search_blank_point(first_curve_point, texture_width, quad_offset, [width, height], texture).ok();
+        if clock_wise_sum % 2 == 1 && counter_clock_wise_sum % 2 == 0 {
+            let uy = if delta_x > 0 {
+                - 1
+            } else if delta_x < 0 {
+                1
+            } else {
+                0
+            };
+
+            let ux: i32 = if delta_y > 0 {
+                1
+            } else {
+                - 1
+            };
+
+
+            let mut xm = (first_line[2] + first_line[0])/ 2;
+            let ym = (first_line[3] + first_line[1])/ 2;
+
+            if 0 < points_first_line_count {
+                for outsider in 0..points_first_line_count - 1 {
+                    if ym <= points_first_line[outsider][1] && ym >= points_first_line[outsider + 1][1]
+                        || ym >= points_first_line[outsider][1] && ym <= points_first_line[outsider + 1][1] {
+                        let dx = points_first_line[outsider + 1][0] as i32 - points_first_line[outsider][0] as i32;
+                        let dy = points_first_line[outsider + 1][1] as i32 - points_first_line[outsider][1] as i32;
+
+                        if dy != 0 {
+                            let dh: f32 = ym as f32 - points_first_line[outsider][1] as f32;
+                            let c = dh / dy as f32;
+                            let x = ((dx as f32 * c) + points_first_line[outsider][0] as f32) as u32;
+                            xm = x;
+                        } else {
+                            xm = points_first_line[outsider][0]
+                        }
+
+                        break;
+                    }
+                }
+            }
+
+            let mut y_pos = (ym as i32 + uy) as u32 * texture_width;
+            while texture[(xm as i32 + ux) as usize + y_pos as usize] != 0 {
+                xm = (xm as i32 + ux) as u32;
+                y_pos = (y_pos as i32 + uy * texture_width as i32) as u32;
+            }
+
+            contours_inner_points.push([(xm as i32 + ux) as usize, y_pos as usize]);
+
+        } else if clock_wise_sum % 2 == 0 && counter_clock_wise_sum % 2 == 1 {
+        } else {
+            println!("failed to determine the clock orientation with: {} {}", clock_wise_sum, counter_clock_wise_sum);
+            return;
         }
 
         contour_start = *contour_end as u8 + 1;
     }
 
-    // 'out: for i in 0..height {
-    //     let mut count: usize = 0;
-    //     let mut last_x: usize = 0;
+    for point in contours_inner_points.iter() {
+        let texture_width: usize = texture_width as usize;
+        let mut points_to_fill: Vec<[usize; 2]> = Vec::with_capacity((width * height) as usize);
+        let mut last: usize = 0;
 
-    //     for j in 0..width {
-    //         if texture[(j + quad_offset[0]) as usize + ((i + quad_offset[1]) * texture_width) as usize] != 0 {
-    //             count += 1;
+        points_to_fill.push(*point);
+        texture[point[0] + point[1]] = 255;
 
-    //             if count == 2 {
-    //                 if (j as usize - last_x) > 1 {
-    //                     println!("x: {}, last: {}", j, last_x);
-    //                     point = Some([quad_offset[0] as usize + last_x + 1, ((quad_offset[1] + i) * texture_width) as usize]);
-    //                     break 'out;
-    //                 } else {
-    //                     break;
-    //                 }
-    //             }
+        loop {
+            let right = [points_to_fill[last][0] + 1, points_to_fill[last][1]];
+            if texture[right[0] + right[1]] == 0 {
+                points_to_fill.push(right);
+                texture[right[0] + right[1]] = 255;
+            }
 
-    //             last_x = j as usize;
-    //         }
-    //     }
-    // }
+            let left = [points_to_fill[last][0] - 1, points_to_fill[last][1]];
+            if texture[left[0] + left[1]] == 0 {
+                points_to_fill.push(left);
+                texture[left[0] + left[1]] = 255;
+            }
 
-    if let None = point {
-        return;
-    }
+            let down = [points_to_fill[last][0], points_to_fill[last][1] + texture_width];
+            if texture[down[0] + down[1]] == 0 {
+                points_to_fill.push(down);
+                texture[down[0] + down[1]] = 255;
+            }
 
-    let point = point.unwrap();
-    let mut points_to_fill: Vec<[usize; 2]> = Vec::with_capacity((width * height) as usize);
+            let up = [points_to_fill[last][0], points_to_fill[last][1] - texture_width];
+            if texture[up[0] + up[1]] == 0 {
+                points_to_fill.push(up);
+                texture[up[0] + up[1]] = 255;
+            }
 
-    points_to_fill.push(point);
-    texture[point[0] + point[1]] = 255;
-    // println!("pinto: {}, {}", point[0], point[1] / texture_width as usize);
+            last += 1;
 
-    let mut last: usize = 0;
-    let texture_width: usize = texture_width as usize;
-
-    loop {
-        let right = [points_to_fill[last][0] + 1, points_to_fill[last][1]];
-        if texture[right[0] + right[1]] == 0 {
-            points_to_fill.push(right);
-            texture[right[0] + right[1]] = 255;
-        }
-
-        let left = [points_to_fill[last][0] - 1, points_to_fill[last][1]];
-        if texture[left[0] + left[1]] == 0 {
-            points_to_fill.push(left);
-            texture[left[0] + left[1]] = 255;
-        }
-
-        let down = [points_to_fill[last][0], points_to_fill[last][1] + texture_width];
-        if texture[down[0] + down[1]] == 0 {
-            points_to_fill.push(down);
-            texture[down[0] + down[1]] = 255;
-        }
-
-        let up = [points_to_fill[last][0], points_to_fill[last][1] - texture_width];
-        if texture[up[0] + up[1]] == 0 {
-            points_to_fill.push(up);
-            texture[up[0] + up[1]] = 255;
-        }
-
-        last += 1;
-
-        if last >= points_to_fill.len() {
-            break;
+            if last >= points_to_fill.len() {
+                break;
+            }
         }
     }
 }
