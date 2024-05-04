@@ -7,9 +7,15 @@ pub struct Core {
     pub running: bool,
     pub width: u32,
     pub height: u32,
+    pub keys_pressed: [u8; 4],
+    pub keys_count: u8,
+
     registry: *mut wayland::wl_registry,
     compositor: *mut wayland::wl_compositor,
     seat: *mut wayland::wl_seat,
+    seat_listener: wayland::wl_seat_listener,
+    keyboard: *mut wayland::wl_keyboard,
+    keyboard_listener: wayland::wl_keyboard_listener,
     xdg_shell: *mut wayland::xdg_wm_base,
     xdg_surface: *mut wayland::xdg_surface,
     xdg_toplevel: *mut wayland::xdg_toplevel,
@@ -22,6 +28,42 @@ pub struct Core {
 #[derive(Debug)]
 pub enum WaylandError {
     CouldNotAddListener,
+}
+
+unsafe extern "C" fn keymap(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: i32, _: u32) {}
+unsafe extern "C" fn enter(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: *mut wayland::wl_surface, _: *mut wayland::wl_array) {}
+unsafe extern "C" fn leave(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: *mut wayland::wl_surface,) {}
+unsafe extern "C" fn modifiers(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: u32, _: u32, _: u32, _: u32) {}
+unsafe extern "C" fn repeat_info(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: i32, _: i32) {}
+
+unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: u32, id: u32, state: u32) {
+    let core = std::mem::transmute::<*mut std::ffi::c_void, &mut Core>(data);
+    let code = id as u8;
+
+    if state == 1 {
+        if (core.keys_count as usize) < core.keys_pressed.len() {
+            core.keys_pressed[core.keys_count as usize] = code;
+            core.keys_count += 1;
+        }
+    } else if state == 0 {
+        for i in 0..core.keys_count {
+            if core.keys_pressed[i as usize] == code {
+                core.keys_pressed[i as usize] = core.keys_pressed[core.keys_count as usize - 1];
+                core.keys_count -= 1;
+                break;
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn seat_name(_: *mut std::ffi::c_void, _: *mut wayland::wl_seat, _: *const i8) {}
+unsafe extern "C" fn capabilities(data: *mut std::ffi::c_void, seat: *mut wayland::wl_seat, capability: u32) {
+    let mut core = std::mem::transmute::<*mut std::ffi::c_void, &mut Core>(data);
+
+    if capability != 0 && wayland::WL_SEAT_CAPABILITY_KEYBOARD != 0 {
+        core.keyboard = wayland::wl_proxy_marshal_flags(seat as *mut wayland::wl_proxy, wayland::WL_SEAT_GET_KEYBOARD, &wayland::wl_keyboard_interface, wayland::wl_proxy_get_version(seat as *mut wayland::wl_proxy), 0, std::ptr::null::<std::ffi::c_void>()) as *mut wayland::wl_keyboard;
+        wayland::wl_proxy_add_listener(core.keyboard as *mut wayland::wl_proxy, std::mem::transmute::<*mut wayland::wl_keyboard_listener, *mut Option<unsafe extern "C" fn()>>(&mut core.keyboard_listener), std::mem::transmute::<&mut Core, *mut std::ffi::c_void>(&mut core));
+    }
 }
 
 unsafe extern "C" fn shell_ping(_: *mut std::ffi::c_void, s: *mut wayland::xdg_wm_base, serial: u32) {
@@ -100,6 +142,7 @@ pub fn init(name: &str, width: u32, height: u32) -> Result<Box<Core>, WaylandErr
         surface: std::ptr::null_mut(),
         compositor: std::ptr::null_mut(),
         seat: std::ptr::null_mut(),
+        keyboard: std::ptr::null_mut(),
         xdg_shell: std::ptr::null_mut(),
         xdg_surface: std::ptr::null_mut(),
         xdg_toplevel: std::ptr::null_mut(),
@@ -110,9 +153,23 @@ pub fn init(name: &str, width: u32, height: u32) -> Result<Box<Core>, WaylandErr
         width,
         height,
         running: true,
+        keys_pressed: [0; 4],
+        keys_count: 0,
         registry_listener: wayland::wl_registry_listener {
             global: Some(global_listener),
             global_remove: Some(remove_listener),
+        },
+        seat_listener: wayland::wl_seat_listener {
+            name: Some(seat_name),
+            capabilities: Some(capabilities),
+        },
+        keyboard_listener: wayland::wl_keyboard_listener {
+            keymap: Some(keymap),
+            enter: Some(enter),
+            leave: Some(leave),
+            key: Some(key),
+            modifiers: Some(modifiers),
+            repeat_info: Some(repeat_info),
         },
         shell_listener: wayland::xdg_wm_base_listener {
             ping: Some(shell_ping)
@@ -152,6 +209,10 @@ pub fn init(name: &str, width: u32, height: u32) -> Result<Box<Core>, WaylandErr
 
     core.xdg_toplevel = unsafe { wayland::wl_proxy_marshal_flags(core.xdg_surface as *mut wayland::wl_proxy, wayland::XDG_SURFACE_GET_TOPLEVEL, &wayland::xdg_toplevel_interface, wayland::wl_proxy_get_version(core.xdg_surface as *mut wayland::wl_proxy), 0, std::ptr::null_mut::<std::ffi::c_void>()) } as *mut wayland::xdg_toplevel;
     if 0 != unsafe { wayland::wl_proxy_add_listener(core.xdg_toplevel as *mut wayland::wl_proxy, std::mem::transmute::<*mut wayland::xdg_toplevel_listener, *mut Option<unsafe extern "C" fn()>>(&mut core.toplevel_listener), std::mem::transmute::<*mut Core, *mut std::ffi::c_void>(&mut *core)) } {
+        return Err(WaylandError::CouldNotAddListener);
+    }
+
+    if 0 != unsafe { wayland::wl_proxy_add_listener(core.seat as *mut wayland::wl_proxy, std::mem::transmute::<*mut wayland::wl_seat_listener, *mut Option<unsafe extern "C" fn()>>(&mut core.seat_listener), std::mem::transmute::<*mut Core, *mut std::ffi::c_void>(&mut *core)) } {
         return Err(WaylandError::CouldNotAddListener);
     }
 

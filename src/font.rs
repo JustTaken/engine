@@ -271,7 +271,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
 
         let boundary = [x_min, x_max, y_min, y_max];
 
-        // let indices = [18, 18];
+        // let indices = [239, 350, 339];
         for (i, code_point) in code_points.iter().enumerate() {
             // let index = indices[i as usize];
             let index = get_index(&cmap, *code_point);
@@ -332,13 +332,12 @@ fn add_glyph(
 
     if number_of_contours < 0 {
         let mut flag = MORE_COMPONENTS;
-        let mut last_offset = [0.0, 0.0];
 
         while flag & MORE_COMPONENTS != 0 {
             flag = read(reader, 2).unwrap() as u16;
 
             let index = read(reader, 2).unwrap();
-            let matrix = read_compound_glyph(reader, factor_matrix[0], &mut last_offset, flag);
+            let matrix = read_compound_glyph(reader, factor_matrix[0], flag);
             let pos = reader.stream_position().unwrap();
 
             add_glyph(
@@ -483,14 +482,13 @@ const WE_HAVE_A_SCALE: u16 = 0x0008;
 const MORE_COMPONENTS: u16 = 0x0020;
 const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
 const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
-const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
+// const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
 // const USE_MY_METRICS: u16 = 0x0200;
 // const OVERLAP_COMPONENT: u16 = 0x0400;
 
 fn read_compound_glyph(
     reader: &mut BufReader<std::fs::File>,
     factor: f32,
-    last_offset: &mut [f32],
     flag: u16,
 ) -> [f32; 6] {
         let mut matrix: [f32; 6] = [factor, 0.0, 0.0, factor, 0.0, 0.0];
@@ -516,13 +514,20 @@ fn read_compound_glyph(
             matrix[3] = (read(reader, 2).unwrap() as f32 / ((1 as u16) << 14) as f32) * factor;
         }
 
-        if flag & WE_HAVE_INSTRUCTIONS != 0 {
-            matrix[4] += last_offset[0];
-            matrix[5] += last_offset[1];
-        }
+        // if flag & WE_HAVE_INSTRUCTIONS == 0 {
+        //     println!("i dont have instructions");
+        //     matrix[4] == 0.0;
+        //     matrix[5] == 0.0;
+        // }
 
-        last_offset[0] = matrix[4];
-        last_offset[1] = matrix[5];
+        // if flag & USE_MY_METRICS == 0 {
+        //     matrix[4] = 0.0;
+        //     matrix[5] = 0.0;
+
+        // }
+
+        // last_offset[0] = matrix[4];
+        // last_offset[1] = matrix[5];
 
         matrix
 }
@@ -659,7 +664,7 @@ fn modify_texture(
                     first_point_flag = true;
                 }
             } else {
-                if py == glyph.points[index_of_next as usize].y {
+                while py == glyph.points[index_of_next as usize].y {
                     index_of_next = if index_of_next == *contour_end as u8 {
                         contour_start
                     } else {
@@ -704,10 +709,14 @@ fn modify_texture(
         }
 
         if clock_wise_sum % 2 == 1 && counter_clock_wise_sum % 2 == 0 {
-            let uy = if delta_x > 0 {
-                - 1
-            } else if delta_x < 0 {
-                1
+            let uy = if delta_x == 0 {
+                0
+            } else if (delta_y / delta_x).abs() <= 2 {
+                if delta_x > 0 {
+                    - 1
+                } else {
+                    1
+                }
             } else {
                 0
             };
@@ -717,7 +726,6 @@ fn modify_texture(
             } else {
                 - 1
             };
-
 
             let mut xm = (first_line[2] + first_line[0])/ 2;
             let ym = (first_line[3] + first_line[1])/ 2;
