@@ -26,6 +26,7 @@ pub struct TrueTypeFont {
     pub glyph_width: u32,
     pub glyph_height: u32,
     pub glyphs_per_row: u32,
+    pub scale: f32,
 }
 
 struct Glyph {
@@ -245,12 +246,12 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
     }
 
     if let (Some(cmap), Some(header)) = (cmap, header) {
-        let factor = size as f32 / header.units_pem as f32;
+        let scale = size as f32 / header.units_pem as f32;
 
-        let x_max = (header.x_max as f32 * factor) as i16;
-        let x_min = (header.x_min as f32 * factor) as i16;
-        let y_max = (header.y_max as f32 * factor) as i16;
-        let y_min = (header.y_min as f32 * factor) as i16;
+        let x_max = (header.x_max as f32 * scale) as i16;
+        let x_min = (header.x_min as f32 * scale) as i16;
+        let y_max = (header.y_max as f32 * scale) as i16;
+        let y_min = (header.y_min as f32 * scale) as i16;
 
         let glyph_width: u32 = (x_max - x_min) as u32 + 1;
         let glyph_height: u32 = (y_max - y_min) as u32 + 1;
@@ -288,7 +289,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
                 width,
                 [x_offset, y_offset],
                 [0, 0],
-                [factor, 0.0, 0.0, factor],
+                [scale, 0.0, 0.0, scale],
                 boundary,
             );
         }
@@ -299,6 +300,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
             height,
             glyph_width,
             glyph_height,
+            scale,
             glyphs_per_row: glyphs_per_row,
         })
     } else {

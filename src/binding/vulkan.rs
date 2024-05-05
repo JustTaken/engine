@@ -84,6 +84,9 @@ pub const SUBPASS_CONTENTS_INLINE: u32 = 0;
 
 pub const IMAGE_USAGE_TRANSFER_SRC_BIT: u32 = 1;
 pub const IMAGE_USAGE_TRANSFER_DST_BIT: u32 = 2;
+pub const BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 2;
+pub const BUFFER_USAGE_INDEX_BUFFER_BIT: u32 = 64;
+pub const INDEX_TYPE_UINT16: u32 = 0;
 pub const IMAGE_USAGE_SAMPLED_BIT: u32 = 4;
 pub const IMAGE_USAGE_COLOR_ATTACHMENT_BIT: u32 = 16;
 pub const IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT: u32 = 32;
@@ -658,6 +661,13 @@ pub struct PipelineInputAssemblyStateCreateInfo {
     pub flags: u32,
     pub topology: u32,
     pub primitiveRestartEnable: u32,
+}
+
+#[repr(C)]
+pub struct BufferCopy {
+    pub srcOffset: u64,
+    pub dstOffset: u64,
+    pub size: u64,
 }
 
 #[repr(C)]
@@ -1917,3 +1927,27 @@ pub type vkCmdBindDescriptorSets = unsafe extern "C" fn(
     pDynamicOffsets: *const u32,
 );
 pub type PFN_vkCmdBindDescriptorSets = ::std::option::Option<vkCmdBindDescriptorSets>;
+pub type vkCmdCopyBuffer = unsafe extern "C" fn(
+    commandBuffer: *mut CommandBuffer,
+    srcBuffer: *mut Buffer,
+    dstBuffer: *mut Buffer,
+    regionCount: u32,
+    pRegions: *const BufferCopy,
+);
+pub type PFN_vkCmdCopyBuffer = ::std::option::Option<vkCmdCopyBuffer>;
+pub type vkCmdBindIndexBuffer = unsafe extern "C" fn(
+    commandBuffer: *mut CommandBuffer,
+    buffer: *mut Buffer,
+    offset: u64,
+    indexType: u32,
+);
+pub type PFN_vkCmdBindIndexBuffer = ::std::option::Option<vkCmdBindIndexBuffer>;
+pub type vkCmdDrawIndexed = unsafe extern "C" fn(
+    commandBuffer: *mut CommandBuffer,
+    indexCount: u32,
+    instanceCount: u32,
+    firstIndex: u32,
+    vertexOffset: i32,
+    firstInstance: u32,
+);
+pub type PFN_vkCmdDrawIndexed = ::std::option::Option<vkCmdDrawIndexed>;

@@ -129,6 +129,9 @@ pub struct Device {
     vkUpdateDescriptorSets: vulkan::vkUpdateDescriptorSets,
     vkDestroySampler: vulkan::vkDestroySampler,
     vkCmdBindDescriptorSets: vulkan::vkCmdBindDescriptorSets,
+    vkCmdCopyBuffer: vulkan::vkCmdCopyBuffer,
+    vkCmdBindIndexBuffer: vulkan::vkCmdBindIndexBuffer,
+    vkCmdDrawIndexed: vulkan::vkCmdDrawIndexed,
 }
 
 pub struct GraphicsPipeline {
@@ -163,14 +166,17 @@ pub struct Swapchain {
     texture_sampler: *mut vulkan::Sampler,
     texture_descriptor_set: *mut vulkan::DescriptorSet,
     uniform_descriptor_set: *mut vulkan::DescriptorSet,
-    uniform_map: Vec<f32>,
+    global_uniform_map: Vec<f32>,
+    instance_uniform_map: Vec<f32>,
 
     framebuffers: Vec<*mut vulkan::Framebuffer>,
     command_pool: *mut vulkan::CommandPool,
     extent: vulkan::Extent2D,
 
-    uniform_buffer: Buffer,
+    global_uniform_buffer: Buffer,
+    instance_uniform_buffer: Buffer,
     vertex_buffer: Buffer,
+    index_buffer: Buffer,
 
     image_available: *mut vulkan::Semaphore,
     render_finished: *mut vulkan::Semaphore,
@@ -450,6 +456,9 @@ pub fn device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR) -> Result<D
         vkUpdateDescriptorSets: device_function!(vkGetDeviceProcAddr, device, PFN_vkUpdateDescriptorSets)?,
         vkDestroySampler: device_function!(vkGetDeviceProcAddr, device, PFN_vkDestroySampler)?,
         vkCmdBindDescriptorSets: device_function!(vkGetDeviceProcAddr, device, PFN_vkCmdBindDescriptorSets)?,
+        vkCmdCopyBuffer: device_function!(vkGetDeviceProcAddr, device, PFN_vkCmdCopyBuffer)?,
+        vkCmdBindIndexBuffer: device_function!(vkGetDeviceProcAddr, device, PFN_vkCmdBindIndexBuffer)?,
+        vkCmdDrawIndexed: device_function!(vkGetDeviceProcAddr, device, PFN_vkCmdDrawIndexed)?,
     })
 }
 
@@ -603,7 +612,6 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
     let vertex_binding_description = vulkan::VertexInputBindingDescription {
         binding: 0,
         stride: std::mem::size_of::<f32>() as u32 * 2,
-        // stride: std::mem::size_of::<f32>() as u32 * 4,
         inputRate: vulkan::VERTEX_INPUT_RATE,
     };
 
@@ -616,10 +624,9 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
 
     let texture_coords_attribute_description = vulkan::VertexInputAttributeDescription {
         binding: 0,
-        // location: 1,
         location: 0,
         format: vulkan::R32G32_SFLOAT,
-        offset: 0,//std::mem::size_of::<f32>() as u32 * 2,
+        offset: 0,
     };
 
     let vertex_input_state_info = vulkan::PipelineVertexInputStateCreateInfo {
@@ -744,12 +751,20 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
         pImmutableSamplers: std::ptr::null(),
     };
 
+    let instance_binding = vulkan::DescriptorSetLayoutBinding {
+        binding: 1,
+        stageFlags: vulkan::SHADER_STAGE_VERTEX_BIT,
+        descriptorType: vulkan::DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        descriptorCount: 1,
+        pImmutableSamplers: std::ptr::null(),
+    };
+
     let global_layout_info = vulkan::DescriptorSetLayoutCreateInfo {
         sType: vulkan::STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
         flags: 0,
         pNext: std::ptr::null(),
-        bindingCount: 1,
-        pBindings: &global_binding as *const vulkan::DescriptorSetLayoutBinding,
+        bindingCount: 2,
+        pBindings: [global_binding, instance_binding].as_ptr() as *const vulkan::DescriptorSetLayoutBinding,
     };
 
     let mut global_descriptor_set_layout: *mut vulkan::DescriptorSetLayout = std::ptr::null_mut();
@@ -1266,44 +1281,159 @@ pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, font: Tr
         return Err(LoadError::SyncMemberFailed);
     }
 
-    // let index = 59;
-    // let normalized_glyph_width: f32 = font.glyph_width as f32 / font.width as f32;
-    // let normalized_glyph_height: f32 = font.glyph_height as f32 / font.height as f32;
-    // let glyph_x_pos = (index % font.glyphs_per_row) as f32 * normalized_glyph_width;
-    // let glyph_y_pos = (index / font.glyphs_per_row) as f32 * normalized_glyph_height;
+    let mut global_uniform_dst: *mut f32 = std::ptr::null_mut();
+    let ratio = height as f32 / width as f32;
 
-    // let vertices: [[f32; 4]; 6] = [
-    //     [-1.0, -1.0, glyph_x_pos, glyph_y_pos + normalized_glyph_height],
-    //     [1.0, -1.0, glyph_x_pos + normalized_glyph_width, glyph_y_pos + normalized_glyph_height],
-    //     [-1.0, 1.0, glyph_x_pos, glyph_y_pos],
-    //     [1.0, -1.0, glyph_x_pos + normalized_glyph_width, glyph_y_pos + normalized_glyph_height],
-    //     [1.0, 1.0, glyph_x_pos + normalized_glyph_width, glyph_y_pos],
-    //     [-1.0, 1.0, glyph_x_pos, glyph_y_pos],
-    // ];
-    // let vertices: [[f32; 4]; 6] = [
-    //     [-1.0, -1.0, 0.0, 0.0 + 1.0],
-    //     [1.0, -1.0, 0.0 + 1.0, 0.0 + 1.0],
-    //     [-1.0, 1.0, 0.0, 0.0],
-    //     [1.0, -1.0, 0.0 + 1.0, 0.0 + 1.0],
-    //     [1.0, 1.0, 0.0 + 1.0, 0.0],
-    //     [-1.0, 1.0, 0.0, 0.0],
-    // ];
-
-    let vertices: [[f32; 2]; 6] = [
-        [0.0, 1.0],
-        [1.0, 1.0],
-        [0.0, 0.0],
-        [1.0, 1.0],
-        [1.0, 0.0],
-        [0.0, 0.0],
+    let global_uniform = [
+        ratio,
+        font.scale,
     ];
 
-    let vertex_buffer = buffer::<[f32; 2]>(device, vulkan::BUFFER_USAGE_VERTEX_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, vertices.len())?;
 
-    let mut data: *mut [f32; 2] = std::ptr::null_mut();
-    unsafe { (device.vkMapMemory)(device.handle, vertex_buffer.memory, 0, (vertices.len() * std::mem::size_of::<[f32; 2]>()) as u64, 0, std::mem::transmute::<&mut *mut [f32; 2], *mut *mut std::ffi::c_void>(&mut data)) };
-    unsafe { std::ptr::copy(vertices.as_ptr(), data, vertices.len()) };
-    unsafe { (device.vkUnmapMemory)(device.handle, vertex_buffer.memory) };
+    let global_uniform_buffer = buffer::<f32>(device, vulkan::BUFFER_USAGE_UNIFORM_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, global_uniform.len())?;
+    unsafe { (device.vkMapMemory)(device.handle, global_uniform_buffer.memory, 0, global_uniform.len() as u64, 0, std::mem::transmute::<&mut *mut f32, *mut *mut std::ffi::c_void>(&mut global_uniform_dst)) };
+    unsafe { std::ptr::copy(global_uniform.as_ptr(), global_uniform_dst, global_uniform.len()) };
+    let global_uniform_map = unsafe { Vec::from_raw_parts(global_uniform_dst, global_uniform.len(), 0) };
+
+    let instance_uniform = [
+        0.5,
+        0.0,
+    ];
+
+    let mut instance_uniform_dst: *mut f32 = std::ptr::null_mut();
+    let instance_uniform_buffer = buffer::<f32>(device, vulkan::BUFFER_USAGE_UNIFORM_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, instance_uniform.len())?;
+    unsafe { (device.vkMapMemory)(device.handle, instance_uniform_buffer.memory, 0, instance_uniform.len() as u64, 0, std::mem::transmute::<&mut *mut f32, *mut *mut std::ffi::c_void>(&mut instance_uniform_dst)) };
+    unsafe { std::ptr::copy(instance_uniform.as_ptr(), instance_uniform_dst, instance_uniform.len()) };
+    let instance_uniform_map = unsafe { Vec::from_raw_parts(instance_uniform_dst, instance_uniform.len(), 0) };
+
+    let uniform_descriptor_set_allocate_info = vulkan::DescriptorSetAllocateInfo {
+        sType: vulkan::STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        pNext: std::ptr::null(),
+        descriptorPool: graphics_pipeline.global_descriptor_pool,
+        descriptorSetCount: 1,
+        pSetLayouts: &graphics_pipeline.global_descriptor_set_layout as *const *mut vulkan::DescriptorSetLayout,
+    };
+
+    let mut uniform_descriptor_set: *mut vulkan::DescriptorSet = std::ptr::null_mut();
+    unsafe { (device.vkAllocateDescriptorSets)(device.handle, &uniform_descriptor_set_allocate_info as *const vulkan::DescriptorSetAllocateInfo, &mut uniform_descriptor_set as *mut *mut vulkan::DescriptorSet) };
+
+    let global_uniform_descriptor_info = vulkan::DescriptorBufferInfo {
+        buffer: global_uniform_buffer.handle,
+        offset: 0,
+        range: std::mem::size_of::<f32>() as u64 * global_uniform.len() as u64,
+    };
+
+    let instance_uniform_descriptor_info = vulkan::DescriptorBufferInfo {
+        buffer: instance_uniform_buffer.handle,
+        offset: 0,
+        range: std::mem::size_of::<f32>() as u64 * instance_uniform.len() as u64,
+    };
+
+    let global_uniform_write_descriptor_set = vulkan::WriteDescriptorSet {
+        sType: vulkan::STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        pNext: std::ptr::null(),
+        dstSet: uniform_descriptor_set,
+        dstBinding: 0,
+        dstArrayElement: 0,
+        descriptorCount: 1,
+        descriptorType: vulkan::DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        pImageInfo: std::ptr::null(),
+        pBufferInfo: &global_uniform_descriptor_info as *const vulkan::DescriptorBufferInfo,
+        pTexelBufferView: std::ptr::null(),
+    };
+
+    let instance_uniform_write_descriptor_set = vulkan::WriteDescriptorSet {
+        sType: vulkan::STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        pNext: std::ptr::null(),
+        dstSet: uniform_descriptor_set,
+        dstBinding: 1,
+        dstArrayElement: 0,
+        descriptorCount: 1,
+        descriptorType: vulkan::DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        pImageInfo: std::ptr::null(),
+        pBufferInfo: &instance_uniform_descriptor_info as *const vulkan::DescriptorBufferInfo,
+        pTexelBufferView: std::ptr::null(),
+    };
+
+    unsafe { (device.vkUpdateDescriptorSets)(device.handle, 2, [global_uniform_write_descriptor_set, instance_uniform_write_descriptor_set].as_ptr() as *const vulkan::WriteDescriptorSet, 0, std::ptr::null()) };
+
+    let vertex_staging_buffer = buffer::<[f32; 2]>(device, vulkan::BUFFER_USAGE_TRANSFER_SRC_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, 4 * 52)?;
+    let mut vertex_data: *mut [f32; 2] = std::ptr::null_mut();
+
+    unsafe { (device.vkMapMemory)(device.handle, vertex_staging_buffer.memory, 0, (52 * 4 * std::mem::size_of::<[f32; 2]>()) as u64, 0, std::mem::transmute::<&mut *mut [f32; 2], *mut *mut std::ffi::c_void>(&mut vertex_data)) };
+
+    let normalized_glyph_width: f32 = font.glyph_width as f32 / font.width as f32;
+    let normalized_glyph_height: f32 = font.glyph_height as f32 / font.height as f32;
+
+    let vertex_buffer = buffer::<[f32; 2]>(device, vulkan::BUFFER_USAGE_TRANSFER_DST_BIT | vulkan::BUFFER_USAGE_VERTEX_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, 4 * 52)?;
+    let mut instance_vertex_buffer = unsafe { Vec::from_raw_parts(vertex_data, 52 * 4, 0) };
+    // let texture_coords = [
+    //     [0.0, 1.0],
+    //     [1.0, 1.0],
+    //     [0.0, 0.0],
+    //     [1.0, 0.0],
+    // ];
+    // instance_vertex_buffer[0..4].copy_from_slice(&[
+    //     [0.0, 1.0],
+    //     [1.0, 1.0],
+    //     [0.0, 0.0],
+    //     [1.0, 0.0],
+    // ]);
+    let vertex_command_buffer = begin_command_buffer(device, command_pool);
+    // let vertex_copy_info = vulkan::BufferCopy {
+    //     srcOffset: 0,
+    //     dstOffset: 0,
+    //     size: (4 * std::mem::size_of::<[f32; 2]>()) as u64,
+    // };
+    // unsafe { (device.vkCmdCopyBuffer)(vertex_command_buffer, vertex_staging_buffer.handle, vertex_buffer.handle, 1, &vertex_copy_info as *const vulkan::BufferCopy) };
+
+    for i in 0..52 {
+        let glyph_x_pos = (i % font.glyphs_per_row) as f32 * normalized_glyph_width;
+        let glyph_y_pos = (i / font.glyphs_per_row) as f32 * normalized_glyph_height;
+
+        let index: usize = i as usize * 4;
+        instance_vertex_buffer[index..(index + 4)].copy_from_slice(&[
+            [glyph_x_pos, glyph_y_pos + normalized_glyph_height],
+            [glyph_x_pos + normalized_glyph_width, glyph_y_pos + normalized_glyph_height],
+            [glyph_x_pos, glyph_y_pos],
+            [glyph_x_pos + normalized_glyph_height, glyph_y_pos],
+        ]);
+
+        let vertex_copy_info = vulkan::BufferCopy {
+            srcOffset: (4 * i as usize * std::mem::size_of::<[f32; 2]>()) as u64,
+            dstOffset: (4 * i as usize * std::mem::size_of::<[f32; 2]>()) as u64,
+            size: (4 * std::mem::size_of::<[f32; 2]>()) as u64,
+        };
+
+        unsafe { (device.vkCmdCopyBuffer)(vertex_command_buffer, vertex_staging_buffer.handle, vertex_buffer.handle, 1, &vertex_copy_info as *const vulkan::BufferCopy) };
+    }
+
+    unsafe { (device.vkUnmapMemory)(device.handle, vertex_staging_buffer.memory) };
+
+    let indices: [u16; 6] = [
+        0, 1, 2, 1, 3, 2
+    ];
+
+    let index_staging_buffer = buffer::<u16>(device, vulkan::BUFFER_USAGE_TRANSFER_SRC_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, indices.len())?;
+    let mut index_data: *mut u16 = std::ptr::null_mut();
+    unsafe { (device.vkMapMemory)(device.handle, index_staging_buffer.memory, 0, (indices.len() * std::mem::size_of::<u16>()) as u64, 0, std::mem::transmute::<&mut *mut u16, *mut *mut std::ffi::c_void>(&mut index_data)) };
+    unsafe { std::ptr::copy(indices.as_ptr(), index_data, indices.len()) };
+    unsafe { (device.vkUnmapMemory)(device.handle, index_staging_buffer.memory) };
+
+    let index_buffer = buffer::<u16>(device, vulkan::BUFFER_USAGE_TRANSFER_DST_BIT | vulkan::BUFFER_USAGE_INDEX_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, indices.len())?;
+    let index_copy_info = vulkan::BufferCopy {
+        srcOffset: 0,
+        dstOffset: 0,
+        size: (indices.len() * std::mem::size_of::<u16>()) as u64,
+    };
+
+    unsafe { (device.vkCmdCopyBuffer)(vertex_command_buffer, index_staging_buffer.handle, index_buffer.handle, 1, &index_copy_info as *const vulkan::BufferCopy) };
+    end_command_buffer(device, command_pool, vertex_command_buffer);
+
+    unsafe { (device.vkFreeMemory)(device.handle, vertex_staging_buffer.memory, std::ptr::null()) };
+    unsafe { (device.vkDestroyBuffer)(device.handle, vertex_staging_buffer.handle, std::ptr::null()) };
+    unsafe { (device.vkFreeMemory)(device.handle, index_staging_buffer.memory, std::ptr::null()) };
+    unsafe { (device.vkDestroyBuffer)(device.handle, index_staging_buffer.handle, std::ptr::null()) };
 
     let pixels = font.texture;
     let texture_buffer = buffer::<u8>(device, vulkan::BUFFER_USAGE_TRANSFER_SRC_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, pixels.len())?;
@@ -1518,56 +1648,13 @@ pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, font: Tr
 
     unsafe { (device.vkUpdateDescriptorSets)(device.handle, 1, &texture_write_descriptor_set as *const vulkan::WriteDescriptorSet, 0, std::ptr::null()) };
 
-    let mut uniform_dst: *mut f32 = std::ptr::null_mut();
-    let ratio = height as f32 / width as f32;
-    let uniform = [
-        ratio, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ];
-
-    let uniform_buffer  = buffer::<f32>(device, vulkan::BUFFER_USAGE_UNIFORM_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, 32)?;
-    unsafe { (device.vkMapMemory)(device.handle, uniform_buffer.memory, 0, uniform.len() as u64, 0, std::mem::transmute::<&mut *mut f32, *mut *mut std::ffi::c_void>(&mut uniform_dst)) };
-    unsafe { std::ptr::copy(uniform.as_ptr(), uniform_dst, uniform.len()) };
-    let uniform_map = unsafe { Vec::from_raw_parts(uniform_dst, uniform.len(), 0) };
-
-    let uniform_descriptor_set_allocate_info = vulkan::DescriptorSetAllocateInfo {
-        sType: vulkan::STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        pNext: std::ptr::null(),
-        descriptorPool: graphics_pipeline.global_descriptor_pool,
-        descriptorSetCount: 1,
-        pSetLayouts: &graphics_pipeline.global_descriptor_set_layout as *const *mut vulkan::DescriptorSetLayout,
-    };
-
-    let mut uniform_descriptor_set: *mut vulkan::DescriptorSet = std::ptr::null_mut();
-    unsafe { (device.vkAllocateDescriptorSets)(device.handle, &uniform_descriptor_set_allocate_info as *const vulkan::DescriptorSetAllocateInfo, &mut uniform_descriptor_set as *mut *mut vulkan::DescriptorSet) };
-
-    let uniform_descriptor_info = vulkan::DescriptorBufferInfo {
-        buffer: uniform_buffer.handle,
-        offset: 0,
-        range: std::mem::size_of::<f32>() as u64 * 32,
-    };
-
-    let uniform_write_descriptor_set = vulkan::WriteDescriptorSet {
-        sType: vulkan::STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        pNext: std::ptr::null(),
-        dstSet: uniform_descriptor_set,
-        dstBinding: 0,
-        dstArrayElement: 0,
-        descriptorCount: 1,
-        descriptorType: vulkan::DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        pImageInfo: std::ptr::null(),
-        pBufferInfo: &uniform_descriptor_info as *const vulkan::DescriptorBufferInfo,
-        pTexelBufferView: std::ptr::null(),
-    };
-
-    unsafe { (device.vkUpdateDescriptorSets)(device.handle, 1, &uniform_write_descriptor_set as *const vulkan::WriteDescriptorSet, 0, std::ptr::null()) };
-
     for i in 0..count {
         record_command_buffer(
             device,
             command_buffers[i as usize],
             framebuffers[i as usize],
             vertex_buffer.handle,
+            index_buffer.handle,
             uniform_descriptor_set,
             texture_descriptor_set,
             &extent,
@@ -1591,13 +1678,15 @@ pub fn swapchain(device: &Device, graphics_pipeline: &GraphicsPipeline, font: Tr
 
         texture_descriptor_set,
         uniform_descriptor_set,
-        uniform_buffer,
-        uniform_map,
-        // uniform_dst,
+        global_uniform_buffer,
+        global_uniform_map,
+        instance_uniform_buffer,
+        instance_uniform_map,
 
         command_pool,
         command_buffers,
         vertex_buffer,
+        index_buffer,
 
         render_finished,
         image_available,
@@ -1838,7 +1927,7 @@ pub fn recreate_swapchain(device: &Device, swapchain: &mut Swapchain, graphics_p
 
         let mut framebuffer: *mut vulkan::Framebuffer = std::ptr::null_mut();
         unsafe { (device.vkCreateFramebuffer)(device.handle, &framebuffer_info as *const vulkan::FramebufferCreateInfo, std::ptr::null(), &mut framebuffer as *mut *mut vulkan::Framebuffer) };
-        swapchain.uniform_map[0] = height as f32 / width as f32;
+        swapchain.global_uniform_map[0] = height as f32 / width as f32;
 
         swapchain.framebuffers[i as usize] = framebuffer;
         record_command_buffer(
@@ -1846,6 +1935,7 @@ pub fn recreate_swapchain(device: &Device, swapchain: &mut Swapchain, graphics_p
             swapchain.command_buffers[i as usize],
             swapchain.framebuffers[i as usize],
             swapchain.vertex_buffer.handle,
+            swapchain.index_buffer.handle,
             swapchain.uniform_descriptor_set,
             swapchain.texture_descriptor_set,
             &swapchain.extent,
@@ -1861,6 +1951,7 @@ pub fn record_command_buffer(
     command_buffer: *mut vulkan::CommandBuffer,
     framebuffer: *mut vulkan::Framebuffer,
     vertex_buffer: *mut vulkan::Buffer,
+    index_buffer: *mut vulkan::Buffer,
     uniform_descriptor_set: *mut vulkan::DescriptorSet,
     texture_descriptor_set: *mut vulkan::DescriptorSet,
     extent: &vulkan::Extent2D,
@@ -1920,6 +2011,7 @@ pub fn record_command_buffer(
     };
 
     unsafe { (device.vkCmdSetViewport)(command_buffer, 0, 1, &viewport as *const vulkan::Viewport) };
+
     let scissor = vulkan::Rect2D {
         offset: vulkan::Offset2D {
             x: 0,
@@ -1932,11 +2024,12 @@ pub fn record_command_buffer(
     };
 
     unsafe { (device.vkCmdSetScissor)(command_buffer, 0, 1, &scissor as *const vulkan::Rect2D) };
-    unsafe { (device.vkCmdBindVertexBuffers)(command_buffer, 0, 1, &vertex_buffer as *const *mut vulkan::Buffer, [0].as_ptr()) };
+    unsafe { (device.vkCmdBindVertexBuffers)(command_buffer, 0, 1, &vertex_buffer as *const *mut vulkan::Buffer, [std::mem::size_of::<[f32; 2]>() as u64 * 4].as_ptr()) };
+    unsafe { (device.vkCmdBindIndexBuffer)(command_buffer, index_buffer as *mut vulkan::Buffer, 0, vulkan::INDEX_TYPE_UINT16) };
     unsafe { (device.vkCmdBindDescriptorSets)(command_buffer, vulkan::PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline.layout, 0, 2, [uniform_descriptor_set, texture_descriptor_set].as_ptr() as *const *mut vulkan::DescriptorSet, 0, std::ptr::null()) };
-    unsafe { (device.vkCmdDraw)(command_buffer, 6, 1, 0, 0) };
+    unsafe { (device.vkCmdDrawIndexed)(command_buffer, 6, 1, 0, 0, 0) };
     unsafe { (device.vkCmdEndRenderPass)(command_buffer) };
-    if 0 != unsafe { (device.vkEndCommandBuffer)(command_buffer) } {}
+    unsafe { (device.vkEndCommandBuffer)(command_buffer) };
 }
 
 pub fn sync(device: &Device, swapchain: &Swapchain) {
@@ -2003,11 +2096,15 @@ pub fn shutdown_swapchain(device: &Device, swapchain: &Swapchain) {
         }
 
         (device.vkFreeMemory)(device.handle, swapchain.vertex_buffer.memory, null);
+        (device.vkFreeMemory)(device.handle, swapchain.index_buffer.memory, null);
         (device.vkFreeMemory)(device.handle, swapchain.texture_image_memory, null);
         (device.vkFreeMemory)(device.handle, swapchain.depth_image_memory, null);
-        (device.vkFreeMemory)(device.handle, swapchain.uniform_buffer.memory, null);
+        (device.vkFreeMemory)(device.handle, swapchain.global_uniform_buffer.memory, null);
+        (device.vkFreeMemory)(device.handle, swapchain.instance_uniform_buffer.memory, null);
         (device.vkDestroyBuffer)(device.handle, swapchain.vertex_buffer.handle, null);
-        (device.vkDestroyBuffer)(device.handle, swapchain.uniform_buffer.handle, null);
+        (device.vkDestroyBuffer)(device.handle, swapchain.index_buffer.handle, null);
+        (device.vkDestroyBuffer)(device.handle, swapchain.global_uniform_buffer.handle, null);
+        (device.vkDestroyBuffer)(device.handle, swapchain.instance_uniform_buffer.handle, null);
         (device.vkDestroySemaphore)(device.handle, swapchain.render_finished, null);
         (device.vkDestroySemaphore)(device.handle, swapchain.image_available, null);
         (device.vkDestroyFence)(device.handle, swapchain.in_flight, null);

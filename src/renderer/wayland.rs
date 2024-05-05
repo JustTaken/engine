@@ -3,6 +3,7 @@ use crate::binding::wayland;
 pub struct Core {
     pub display: *mut wayland::wl_display,
     pub surface: *mut wayland::wl_surface,
+
     pub extensions: [*const std::ffi::c_char; 2],
     pub running: bool,
     pub width: u32,
@@ -10,15 +11,18 @@ pub struct Core {
     pub keys_pressed: [u8; 4],
     pub keys_count: u8,
 
+    pub content: Vec<u8>,
+
     registry: *mut wayland::wl_registry,
     compositor: *mut wayland::wl_compositor,
     seat: *mut wayland::wl_seat,
-    seat_listener: wayland::wl_seat_listener,
     keyboard: *mut wayland::wl_keyboard,
-    keyboard_listener: wayland::wl_keyboard_listener,
     xdg_shell: *mut wayland::xdg_wm_base,
     xdg_surface: *mut wayland::xdg_surface,
     xdg_toplevel: *mut wayland::xdg_toplevel,
+
+    seat_listener: wayland::wl_seat_listener,
+    keyboard_listener: wayland::wl_keyboard_listener,
     registry_listener: wayland::wl_registry_listener,
     shell_listener: wayland::xdg_wm_base_listener,
     shell_surface_listener: wayland::xdg_surface_listener,
@@ -150,11 +154,14 @@ pub fn init(name: &str, width: u32, height: u32) -> Result<Box<Core>, WaylandErr
             std::ffi::CString::new("VK_KHR_surface").unwrap().into_raw(),
             std::ffi::CString::new("VK_KHR_wayland_surface").unwrap().into_raw(),
         ],
+
         width,
         height,
         running: true,
         keys_pressed: [0; 4],
         keys_count: 0,
+        content: vec![b'H', b'e', b'l', b'l', b'o', b' ', b'W', b'o', b'r', b'l', b'd'],
+
         registry_listener: wayland::wl_registry_listener {
             global: Some(global_listener),
             global_remove: Some(remove_listener),
