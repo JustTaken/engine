@@ -1259,14 +1259,6 @@ pub struct BufferImageCopy {
 }
 
 #[repr(C)]
-pub struct ImageSubresourceLayers {
-    pub aspectMask: u32,
-    pub mipLevel: u32,
-    pub baseArrayLayer: u32,
-    pub layerCount: u32,
-}
-
-#[repr(C)]
 pub struct SamplerCreateInfo {
     pub sType: u32,
     pub pNext: *const void,
@@ -1358,7 +1350,7 @@ pub struct BufferImageCopy2 {
 }
 
 #[repr(C)]
-pub struct VkImageSubresourceLayers {
+pub struct ImageSubresourceLayers {
     pub aspectMask: u32,
     pub mipLevel: u32,
     pub baseArrayLayer: u32,
@@ -1951,3 +1943,12 @@ pub type vkCmdDrawIndexed = unsafe extern "C" fn(
     firstInstance: u32,
 );
 pub type PFN_vkCmdDrawIndexed = ::std::option::Option<vkCmdDrawIndexed>;
+pub type vkCmdPushConstants = unsafe extern "C" fn(
+    commandBuffer: *mut CommandBuffer,
+    layout: *mut PipelineLayout,
+    stageFlags: u32,
+    offset: u32,
+    size: u32,
+    pValues: *const ::std::os::raw::c_void,
+);
+pub type PFN_vkCmdPushConstants = ::std::option::Option<vkCmdPushConstants>;

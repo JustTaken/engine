@@ -1,6 +1,30 @@
 use crate::binding::wayland;
 
-pub struct Core {
+struct Line {
+    content: Vec<u8>,
+}
+
+impl Line {
+    fn get_slice(&self, offset: usize, size: usize) -> &[u8] {
+        if self.content.len() < offset {
+            &[]
+        } else if self.content.len() < size {
+            &self.content[offset..self.content.len()]
+        } else {
+            &self.content[offset..size]
+        }
+    }
+
+    fn get_this_pos_or_max(&self, pos: usize) -> usize {
+        if self.content.len() < pos {
+            self.content.len()
+        } else {
+            pos
+        }
+    }
+}
+
+pub struct Core<'a> {
     pub display: *mut wayland::wl_display,
     pub surface: *mut wayland::wl_surface,
 
@@ -11,7 +35,11 @@ pub struct Core {
     pub keys_pressed: [u8; 4],
     pub keys_count: u8,
 
-    pub content: Vec<u8>,
+    content: Vec<Line>,
+    pub lines_with_offset: Vec<&'a [u8]>,
+    pub chars_positions: Vec<Vec<[u8; 2]>>,
+    pub content_changed: bool,
+    cursor_position: [usize; 2],
 
     registry: *mut wayland::wl_registry,
     compositor: *mut wayland::wl_compositor,
@@ -32,6 +60,7 @@ pub struct Core {
 #[derive(Debug)]
 pub enum WaylandError {
     CouldNotAddListener,
+    NotAscci,
 }
 
 unsafe extern "C" fn keymap(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: i32, _: u32) {}
@@ -45,7 +74,42 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
     let code = id as u8;
 
     if state == 1 {
-        if (core.keys_count as usize) < core.keys_pressed.len() {
+        if let Ok(b) = try_ascci(code) {
+
+            if b == b'\n' {
+                core.cursor_position[1] += 1;
+
+                if core.content.len() <= core.cursor_position[1] {
+                    core.content.push(
+                        Line {
+                            content: Vec::new()
+                        }
+                    );
+
+                    core.lines_with_offset.push(&[]);
+                    core.cursor_position[0] = 0;
+                } else {
+                    core.cursor_position[0] = core.content[core.cursor_position[1]].get_this_pos_or_max(core.cursor_position[0]);
+                }
+            } else {
+                core.content[core.cursor_position[1]].content.insert(core.cursor_position[0], b);
+                core.lines_with_offset[core.cursor_position[1]] = core.content[core.cursor_position[1]].get_slice(0, 10);
+                // core.chars_positions[b as usize - 32].push([core.cursor_position[0] as u8, core.cursor_position[1] as u8]);
+                core.cursor_position[0] += 1;
+                core.content_changed = true;
+            }
+        } else if id == 14 {
+            if core.cursor_position[0] == 0 {
+                if core.cursor_position[1] > 0 {
+                    core.cursor_position[1] -= 1;
+                    core.cursor_position[0] = core.content[core.cursor_position[1]].get_this_pos_or_max(core.cursor_position[0]);
+                }
+            } else {
+                core.content[core.cursor_position[1]].content.remove(core.cursor_position[0] - 1);
+                core.cursor_position[0] -= 1;
+                core.content_changed = true;
+            }
+        }else if (core.keys_count as usize) < core.keys_pressed.len() {
             core.keys_pressed[core.keys_count as usize] = code;
             core.keys_count += 1;
         }
@@ -139,7 +203,7 @@ unsafe extern "C" fn global_listener(data: *mut std::ffi::c_void, wl_registry: *
     }
 }
 
-pub fn init(name: &str, width: u32, height: u32) -> Result<Box<Core>, WaylandError> {
+pub fn init(name: &str, width: u32, height: u32, chars_len: usize) -> Result<Box<Core>, WaylandError> {
     let mut core = Box::new(Core {
         display: std::ptr::null_mut(),
         registry: std::ptr::null_mut(),
@@ -154,13 +218,23 @@ pub fn init(name: &str, width: u32, height: u32) -> Result<Box<Core>, WaylandErr
             std::ffi::CString::new("VK_KHR_surface").unwrap().into_raw(),
             std::ffi::CString::new("VK_KHR_wayland_surface").unwrap().into_raw(),
         ],
-
+        chars_positions: (0..chars_len).map(|_| Vec::new()).collect::<Vec<Vec<[u8; 2]>>>(),
         width,
         height,
         running: true,
         keys_pressed: [0; 4],
         keys_count: 0,
-        content: vec![b'H', b'e', b'l', b'l', b'o', b' ', b'W', b'o', b'r', b'l', b'd'],
+        content_changed: false,
+        // content: vec![b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd'],
+        content: vec![
+            Line {
+                content: Vec::new(),
+            },
+        ],
+        lines_with_offset: vec![
+            &[],
+        ],
+        cursor_position: [0, 0],
 
         registry_listener: wayland::wl_registry_listener {
             global: Some(global_listener),
@@ -250,4 +324,95 @@ pub fn shutdown(core: &Core) {
         wayland::wl_proxy_destroy(core.registry as *mut wayland::wl_proxy);
         wayland::wl_display_disconnect(core.display);
     };
+}
+
+// #[repr(u8)]
+// enum KeyMap {
+//     Esc = 1,
+//     One = 2,
+//     Two = 3,
+//     Tree = 4,
+//     Four = 5,
+//     Five = 6,
+//     Six = 7,
+//     Seven = 8,
+//     Eight = 9,
+//     Nine = 10,
+//     Zero = 11,
+//     Minus = 12,
+//     Equal = 13,
+//     Backspace = 14,
+//     Tab = 15,
+//     Q = 16,
+//     W = 17,
+//     E = 18,
+//     R = 19,
+//     T = 20,
+//     Y = 21,
+//     U = 22,
+//     I = 23,
+//     O = 24,
+//     P = 25,
+//     OpenSquareBracket = 26,
+//     CloseSquareBracket = 27,
+//     Enter = 28,
+//     CapsLock = 29,
+//     A = 30,
+//     S = 31,
+//     D = 32,
+//     F = 33,
+//     G = 34,
+//     H = 35,
+//     J = 36,
+//     K = 37,
+//     L = 38,
+//     SemiCoulon = 39,
+//     Quote = 40,
+// }
+
+fn try_ascci(u: u8) -> Result<u8, WaylandError> {
+    match u {
+        28 => Ok(b'\n'),
+        57 => Ok(b' '),
+
+        2 => Ok(b'1'),
+        3 => Ok(b'2'),
+        4 => Ok(b'3'),
+        5 => Ok(b'4'),
+        6 => Ok(b'5'),
+        7 => Ok(b'6'),
+        8 => Ok(b'7'),
+        9 => Ok(b'8'),
+        10 => Ok(b'9'),
+        11 => Ok(b'0'),
+
+        16 => Ok(b'q'),
+        17 => Ok(b'w'),
+        18 => Ok(b'e'),
+        19 => Ok(b'r'),
+        20 => Ok(b't'),
+        21 => Ok(b'y'),
+        22 => Ok(b'u'),
+        23 => Ok(b'i'),
+        24 => Ok(b'o'),
+        25 => Ok(b'p'),
+        30 => Ok(b'a'),
+        31 => Ok(b's'),
+        32 => Ok(b'd'),
+        33 => Ok(b'f'),
+        34 => Ok(b'g'),
+        35 => Ok(b'h'),
+        36 => Ok(b'j'),
+        37 => Ok(b'k'),
+        38 => Ok(b'l'),
+        44 => Ok(b'z'),
+        45 => Ok(b'x'),
+        46 => Ok(b'c'),
+        47 => Ok(b'v'),
+        48 => Ok(b'b'),
+        49 => Ok(b'n'),
+        50 => Ok(b'm'),
+
+        _ => Err(WaylandError::NotAscci),
+    }
 }
