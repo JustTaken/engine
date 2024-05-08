@@ -35,11 +35,15 @@ pub struct Core<'a> {
     pub keys_pressed: [u8; 4],
     pub keys_count: u8,
 
-    content: Vec<Line>,
     pub lines_with_offset: Vec<&'a [u8]>,
     pub chars_positions: Vec<Vec<[u8; 2]>>,
     pub content_changed: bool,
+
+    chars_per_row: usize,
+    content: Vec<Line>,
     cursor_position: [usize; 2],
+    cursor_position_offset: [usize; 2],
+    scale: f32,
 
     registry: *mut wayland::wl_registry,
     compositor: *mut wayland::wl_compositor,
@@ -74,52 +78,65 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
     let code = id as u8;
 
     if state == 1 {
-        if let Ok(b) = try_ascci(code) {
+        if code == ENTER {
+            core.cursor_position[1] += 1;
 
-            if b == b'\n' {
-                core.cursor_position[1] += 1;
+            if core.content.len() <= core.cursor_position[1] {
+                core.content.push(
+                    Line {
+                        content: Vec::new()
+                    }
+                );
 
-                if core.content.len() <= core.cursor_position[1] {
-                    core.content.push(
-                        Line {
-                            content: Vec::new()
-                        }
-                    );
-
-                    core.lines_with_offset.push(&[]);
-                    core.cursor_position[0] = 0;
-                } else {
-                    core.cursor_position[0] = core.content[core.cursor_position[1]].get_this_pos_or_max(core.cursor_position[0]);
-                }
+                core.cursor_position[0] = 0;
             } else {
-                core.content[core.cursor_position[1]].content.insert(core.cursor_position[0], b);
-                core.lines_with_offset[core.cursor_position[1]] = core.content[core.cursor_position[1]].get_slice(0, 10);
-                // core.chars_positions[b as usize - 32].push([core.cursor_position[0] as u8, core.cursor_position[1] as u8]);
-                core.cursor_position[0] += 1;
+                core.cursor_position[0] = core.content[core.cursor_position[1]].get_this_pos_or_max(core.cursor_position[0]);
+            }
+
+            if core.cursor_position[0] < core.cursor_position_offset[0] {
+                core.cursor_position_offset[0] = core.cursor_position[0];
                 core.content_changed = true;
             }
-        } else if id == 14 {
+
+            if core.cursor_position[1] >= core.cursor_position_offset[1] + core.lines_with_offset.len() {
+                core.lines_with_offset.rotate_left(1);
+                core.cursor_position_offset[1] += 1;
+                core.lines_with_offset[core.cursor_position[1] - core.cursor_position_offset[1]] = core.content[core.cursor_position[1]].get_slice(core.cursor_position[0], core.cursor_position[0] + core.chars_per_row);
+                core.content_changed = true;
+            } else if core.cursor_position[1] < core.cursor_position_offset[1] {
+                core.cursor_position_offset[1] = core.cursor_position[1];
+                core.content_changed = true;
+            }
+        } else if code == BACKSPACE {
             if core.cursor_position[0] == 0 {
                 if core.cursor_position[1] > 0 {
                     core.cursor_position[1] -= 1;
-                    core.cursor_position[0] = core.content[core.cursor_position[1]].get_this_pos_or_max(core.cursor_position[0]);
+                    core.cursor_position[0] = core.content[core.cursor_position[1]].content.len();
+
+                    if core.cursor_position[0] >= core.chars_per_row + core.cursor_position_offset[0] {
+                        core.cursor_position_offset[0] = core.cursor_position[0] - core.chars_per_row + 1;
+                        core.content_changed = true;
+                    }
                 }
             } else {
                 core.content[core.cursor_position[1]].content.remove(core.cursor_position[0] - 1);
+                core.lines_with_offset[core.cursor_position[1] - core.cursor_position_offset[1]] = core.content[core.cursor_position[1]].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + core.chars_per_row);
                 core.cursor_position[0] -= 1;
                 core.content_changed = true;
             }
-        }else if (core.keys_count as usize) < core.keys_pressed.len() {
+        } else if let Ok(b) = try_ascci(code) {
+            core.content[core.cursor_position[1]].content.insert(core.cursor_position[0], b);
+            core.lines_with_offset[core.cursor_position[1] - core.cursor_position_offset[1]] = core.content[core.cursor_position[1]].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + core.chars_per_row);
+            core.cursor_position[0] += 1;
+
+            if core.cursor_position[0] >= core.chars_per_row + core.cursor_position_offset[0] {
+                core.cursor_position_offset[0] = core.cursor_position[0] - core.chars_per_row + 1;
+            }
+
+            core.content_changed = true;
+        } else if (core.keys_count as usize) < core.keys_pressed.len() {
             core.keys_pressed[core.keys_count as usize] = code;
             core.keys_count += 1;
-        }
-    } else if state == 0 {
-        for i in 0..core.keys_count {
-            if core.keys_pressed[i as usize] == code {
-                core.keys_pressed[i as usize] = core.keys_pressed[core.keys_count as usize - 1];
-                core.keys_count -= 1;
-                break;
-            }
         }
     }
 }
@@ -153,6 +170,24 @@ unsafe extern "C" fn toplevel_configure(data: *mut std::ffi::c_void, _: *mut way
     if width > 0 && height > 0 {
         core.width = width as u32;
         core.height = height as u32;
+
+        let chars_per_coloum = (2.0 / core.scale) as usize;
+        let chars_per_row = (2.0 / core.scale * core.width as f32 / core.height as f32) as usize + 1;
+
+        if chars_per_row != core.chars_per_row {
+            core.chars_per_row = chars_per_row;
+            for i in core.cursor_position_offset[1]..core.content.len() {
+                core.lines_with_offset[i - core.cursor_position_offset[1]] = core.content[i].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + chars_per_row);
+            }
+        }
+
+        if chars_per_coloum > core.lines_with_offset.len() {
+            for i in chars_per_coloum..core.lines_with_offset.len() {
+                core.lines_with_offset[i] = core.content[core.cursor_position_offset[1] + i].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + chars_per_row);
+            }
+        } else {
+            core.lines_with_offset.resize(chars_per_coloum, &[]);
+        }
     }
 }
 
@@ -203,7 +238,15 @@ unsafe extern "C" fn global_listener(data: *mut std::ffi::c_void, wl_registry: *
     }
 }
 
-pub fn init(name: &str, width: u32, height: u32, chars_len: usize) -> Result<Box<Core>, WaylandError> {
+pub fn init(
+    name: &str,
+    width: u32,
+    height: u32,
+    chars_len: usize,
+    scale: f32,
+) -> Result<Box<Core>, WaylandError> {
+    let chars_per_coloum = (2.0 / scale) as usize;
+
     let mut core = Box::new(Core {
         display: std::ptr::null_mut(),
         registry: std::ptr::null_mut(),
@@ -221,20 +264,20 @@ pub fn init(name: &str, width: u32, height: u32, chars_len: usize) -> Result<Box
         chars_positions: (0..chars_len).map(|_| Vec::new()).collect::<Vec<Vec<[u8; 2]>>>(),
         width,
         height,
+        scale,
         running: true,
         keys_pressed: [0; 4],
         keys_count: 0,
         content_changed: false,
-        // content: vec![b'h', b'e', b'l', b'l', b'o', b' ', b'w', b'o', b'r', b'l', b'd'],
+        chars_per_row: (2.0 / scale * width as f32 / height as f32) as usize + 1,
         content: vec![
             Line {
                 content: Vec::new(),
             },
         ],
-        lines_with_offset: vec![
-            &[],
-        ],
+        lines_with_offset: vec![&[]; chars_per_coloum],
         cursor_position: [0, 0],
+        cursor_position_offset: [0, 0],
 
         registry_listener: wayland::wl_registry_listener {
             global: Some(global_listener),
@@ -326,55 +369,11 @@ pub fn shutdown(core: &Core) {
     };
 }
 
-// #[repr(u8)]
-// enum KeyMap {
-//     Esc = 1,
-//     One = 2,
-//     Two = 3,
-//     Tree = 4,
-//     Four = 5,
-//     Five = 6,
-//     Six = 7,
-//     Seven = 8,
-//     Eight = 9,
-//     Nine = 10,
-//     Zero = 11,
-//     Minus = 12,
-//     Equal = 13,
-//     Backspace = 14,
-//     Tab = 15,
-//     Q = 16,
-//     W = 17,
-//     E = 18,
-//     R = 19,
-//     T = 20,
-//     Y = 21,
-//     U = 22,
-//     I = 23,
-//     O = 24,
-//     P = 25,
-//     OpenSquareBracket = 26,
-//     CloseSquareBracket = 27,
-//     Enter = 28,
-//     CapsLock = 29,
-//     A = 30,
-//     S = 31,
-//     D = 32,
-//     F = 33,
-//     G = 34,
-//     H = 35,
-//     J = 36,
-//     K = 37,
-//     L = 38,
-//     SemiCoulon = 39,
-//     Quote = 40,
-// }
+const ENTER: u8 = 28;
+const BACKSPACE: u8 = 14;
 
 fn try_ascci(u: u8) -> Result<u8, WaylandError> {
     match u {
-        28 => Ok(b'\n'),
-        57 => Ok(b' '),
-
         2 => Ok(b'1'),
         3 => Ok(b'2'),
         4 => Ok(b'3'),

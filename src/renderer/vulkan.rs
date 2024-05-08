@@ -38,6 +38,30 @@ macro_rules! device_function {
     }
 }
 
+#[derive(Debug)]
+pub enum DrawError {
+    HasToRecreate,
+    Fail,
+}
+
+#[derive(Debug)]
+pub enum LoadError {
+    NoLibVulkan,
+    NoFunction,
+    InstanceFailed,
+    SurfaceCreate,
+    NoExtension,
+    NoSuitableDevice,
+    NoSuchFile,
+    ShaderModuleCreate,
+    GraphicsPipelineFail,
+    SwapchainDepthImage,
+    SwapchainBuffer,
+    SyncMemberFailed,
+    BufferCreate,
+    ImageFail,
+}
+
 pub struct Instance {
     handle: *mut vulkan::Instance,
     vkDestroyInstance: vulkan::vkDestroyInstance,
@@ -158,18 +182,12 @@ pub struct Swapchain {
     ready_command_buffers: Vec<bool>,
     handle: *mut vulkan::SwapchainKHR,
     image_views: Vec<*mut vulkan::ImageView>,
-    depth_image: *mut vulkan::Image,
-    depth_image_memory: *mut vulkan::DeviceMemory,
-    depth_image_view: *mut vulkan::ImageView,
-    texture_image: *mut vulkan::Image,
-    texture_image_memory: *mut vulkan::DeviceMemory,
-    texture_image_view: *mut vulkan::ImageView,
+    depth_image: Image,
+    texture_image: Image,
     texture_sampler: *mut vulkan::Sampler,
     texture_descriptor_set: *mut vulkan::DescriptorSet,
     uniform_descriptor_set: *mut vulkan::DescriptorSet,
     global_uniform_map: Vec<f32>,
-
-    h_space: f32,
 
     framebuffers: Vec<*mut vulkan::Framebuffer>,
     command_pool: *mut vulkan::CommandPool,
@@ -184,28 +202,10 @@ pub struct Swapchain {
     in_flight: *mut vulkan::Fence,
 }
 
-#[derive(Debug)]
-pub enum DrawError {
-    HasToRecreate,
-    Fail,
-}
-
-#[derive(Debug)]
-pub enum LoadError {
-    NoLibVulkan,
-    NoFunction,
-    InstanceFailed,
-    SurfaceCreate,
-    NoExtension,
-    NoSuitableDevice,
-    NoSuchFile,
-    ShaderModuleCreate,
-    GraphicsPipelineFail,
-    SwapchainDepthImage,
-    SwapchainBuffer,
-    SyncMemberFailed,
-    BufferCreate,
-    ImageFail,
+struct Image {
+    handle: *mut vulkan::Image,
+    memory: *mut vulkan::DeviceMemory,
+    view: *mut vulkan::ImageView,
 }
 
 fn loader_function(library: *const std::ffi::c_void) -> vulkan::PFN_vkGetInstanceProcAddr {
@@ -546,34 +546,27 @@ fn avaliate_device(dispatch: &Instance, surface: *mut vulkan::SurfaceKHR, requir
     ans
 }
 
+fn create_shader_module(device: &Device, path: &str) -> Result<*mut vulkan::ShaderModule, LoadError> {
+   let code = std::fs::read(path).map_err(|_| LoadError::NoSuchFile)?;
+    let info = vulkan::ShaderModuleCreateInfo {
+        sType: vulkan::STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        pNext: std::ptr::null(),
+        flags: 0,
+        codeSize: code.len(),
+        pCode: code.as_ptr() as *const u32,
+    };
+
+    let mut shader_module: *mut vulkan::ShaderModule = std::ptr::null_mut();
+    if 0 != unsafe { (device.vkCreateShaderModule)(device.handle, &info as *const vulkan::ShaderModuleCreateInfo, std::ptr::null(), &mut shader_module as *mut *mut vulkan::ShaderModule) } {
+        return Err(LoadError::ShaderModuleCreate);
+    }
+
+    Ok(shader_module)
+}
+
 pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, height: u32) -> Result<GraphicsPipeline, LoadError> {
-    let vert_code = std::fs::read("assets/shader/vert.spv").map_err(|_| LoadError::NoSuchFile)?;
-    let vert_module_info = vulkan::ShaderModuleCreateInfo {
-        sType: vulkan::STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        pNext: std::ptr::null(),
-        flags: 0,
-        codeSize: vert_code.len(),
-        pCode: vert_code.as_ptr() as *const u32,
-    };
-
-    let mut vert_shader_module: *mut vulkan::ShaderModule = std::ptr::null_mut();
-    if 0 != unsafe { (device.vkCreateShaderModule)(device.handle, &vert_module_info as *const vulkan::ShaderModuleCreateInfo, std::ptr::null(), &mut vert_shader_module as *mut *mut vulkan::ShaderModule) } {
-        return Err(LoadError::ShaderModuleCreate);
-    }
-
-    let frag_code = std::fs::read("assets/shader/frag.spv").map_err(|_| LoadError::NoSuchFile)?;
-    let frag_module_info = vulkan::ShaderModuleCreateInfo {
-        sType: vulkan::STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        pNext: std::ptr::null(),
-        flags: 0,
-        codeSize: frag_code.len(),
-        pCode: frag_code.as_ptr() as *const u32,
-    };
-
-    let mut frag_shader_module: *mut vulkan::ShaderModule = std::ptr::null_mut();
-    if 0 != unsafe { (device.vkCreateShaderModule)(device.handle, &frag_module_info as *const vulkan::ShaderModuleCreateInfo, std::ptr::null(), &mut frag_shader_module as *mut *mut vulkan::ShaderModule) } {
-        return Err(LoadError::ShaderModuleCreate);
-    }
+    let vert_shader_module = create_shader_module(device, "assets/shader/vert.spv")?;
+    let frag_shader_module = create_shader_module(device, "assets/shader/frag.spv")?;
 
     let shader_name = unsafe { std::ffi::CStr::from_ptr(b"main\0".as_ptr().cast()) };
     let shader_stage_infos: [vulkan::PipelineShaderStageCreateInfo; 2] = [
@@ -656,8 +649,8 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
             y: 0,
         },
         extent: vulkan::Extent2D {
-            width: width,
-            height: height,
+            width,
+            height,
         },
     };
 
@@ -853,7 +846,7 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
         colorSpace: surface_formats[0].colorSpace,
     };
 
-    for format in surface_formats {
+    for format in surface_formats.into_iter() {
         if format.format == vulkan::R8G8B8A8_SRGB && format.colorSpace == vulkan::COLOR_SPACE_SRGB_NONLINEAR_KHR {
             surface_format = format;
             break;
@@ -1003,7 +996,7 @@ fn buffer<T>(device: &Device, usage: u32, properties: u32, len: usize) -> Result
         pNext: std::ptr::null(),
         flags: 0,
         size: (std::mem::size_of::<T>() * len) as u64,
-        usage: usage,
+        usage,
         sharingMode: vulkan::SHARING_MODE_EXCLUSIVE,
         queueFamilyIndexCount: 0,
         pQueueFamilyIndices: std::ptr::null()
@@ -1052,25 +1045,279 @@ pub fn invalidate_command_buffers(swapchain: &mut Swapchain) {
     }
 }
 
+fn create_sampler(device: &Device) -> *mut vulkan::Sampler {
+    let texture_sampler_info = vulkan::SamplerCreateInfo {
+        sType: vulkan::STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        pNext: std::ptr::null(),
+        flags: 0,
+        magFilter: vulkan::FILTER_LINEAR,
+        minFilter: vulkan::FILTER_LINEAR,
+        addressModeU: vulkan::SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        addressModeV: vulkan::SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        addressModeW: vulkan::SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+        anisotropyEnable: vulkan::FALSE,
+        maxAnisotropy: 1.0,
+        borderColor: vulkan::BORDER_COLOR_INT_OPAQUE_BLACK,
+        unnormalizedCoordinates: vulkan::FALSE,
+        compareEnable: vulkan::FALSE,
+        compareOp: vulkan::COMPARE_OP_ALWAYS,
+        mipmapMode: vulkan::SAMPLER_MIPMAP_MODE_LINEAR,
+        mipLodBias: 0.0,
+        minLod: 0.0,
+        maxLod: 0.0,
+    };
+
+    let mut texture_sampler: *mut vulkan::Sampler = std::ptr::null_mut();
+    unsafe { (device.vkCreateSampler)( device.handle, &texture_sampler_info as *const vulkan::SamplerCreateInfo, std::ptr::null(), &mut texture_sampler as *mut *mut vulkan::Sampler) };
+
+    texture_sampler
+}
+
+fn allocate_descriptor_set(device: &Device, descriptor_pool: *mut vulkan::DescriptorPool, layout: *mut vulkan::DescriptorSetLayout) -> *mut vulkan::DescriptorSet {
+    let info = vulkan::DescriptorSetAllocateInfo {
+        sType: vulkan::STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        pNext: std::ptr::null(),
+        descriptorPool: descriptor_pool,
+        descriptorSetCount: 1,
+        pSetLayouts: &layout as *const *mut vulkan::DescriptorSetLayout,
+    };
+
+    let mut descriptor_set: *mut vulkan::DescriptorSet = std::ptr::null_mut();
+    unsafe { (device.vkAllocateDescriptorSets)(device.handle, &info as *const vulkan::DescriptorSetAllocateInfo, &mut descriptor_set as *mut *mut vulkan::DescriptorSet) };
+
+    descriptor_set
+}
+
+fn update_image_descriptor_set(device: &Device, image_view: *mut vulkan::ImageView, image_sampler: *mut vulkan::Sampler, descriptor_set: *mut vulkan::DescriptorSet) {
+    let descriptor_image_info = vulkan::DescriptorImageInfo {
+        imageLayout: vulkan::IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        imageView: image_view,
+        sampler: image_sampler,
+    };
+
+    let write_descriptor_set = vulkan::WriteDescriptorSet {
+        sType: vulkan::STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        pNext: std::ptr::null(),
+        dstSet: descriptor_set,
+        dstBinding: 0,
+        dstArrayElement: 0,
+        descriptorCount: 1,
+        descriptorType: vulkan::DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        pImageInfo: &descriptor_image_info as *const vulkan::DescriptorImageInfo,
+        pBufferInfo: std::ptr::null(),
+        pTexelBufferView: std::ptr::null(),
+    };
+
+    unsafe { (device.vkUpdateDescriptorSets)(device.handle, 1, &write_descriptor_set as *const vulkan::WriteDescriptorSet, 0, std::ptr::null()) };
+}
+
+fn copy_buffer_to_image(
+    device: &Device,
+    command_pool: *mut vulkan::CommandPool,
+    image: *mut vulkan::Image,
+    data: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(), LoadError> {
+    let buffer = buffer::<u8>(device, vulkan::BUFFER_USAGE_TRANSFER_SRC_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, data.len())?;
+
+    let mut dst: *mut u8 = std::ptr::null_mut();
+    unsafe { (device.vkMapMemory)(device.handle, buffer.memory, 0, data.len() as u64, 0, std::mem::transmute::<&mut *mut u8, *mut *mut std::ffi::c_void>(&mut dst)) };
+    unsafe { std::ptr::copy(data.as_ptr(), dst, data.len()) };
+    unsafe { (device.vkUnmapMemory)(device.handle, buffer.memory) };
+
+
+    let barrier_command_buffer = begin_command_buffer(device, command_pool);
+
+    let barrier = vulkan::ImageMemoryBarrier {
+        sType: vulkan::STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        pNext: std::ptr::null(),
+        oldLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
+        newLayout: vulkan::IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        srcQueueFamilyIndex: vulkan::QUEUE_FAMILY_IGNORED,
+        dstQueueFamilyIndex: vulkan::QUEUE_FAMILY_IGNORED,
+        image,
+        subresourceRange: vulkan::ImageSubresourceRange {
+            aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
+            baseMipLevel: 0,
+            levelCount: 1,
+            baseArrayLayer: 0,
+            layerCount: 1,
+        },
+        srcAccessMask: 0,
+        dstAccessMask: vulkan::ACCESS_TRANSFER_WRITE_BIT,
+    };
+
+    unsafe { (device.vkCmdPipelineBarrier)(barrier_command_buffer, vulkan::PIPELINE_STAGE_TOP_OF_PIPE_BIT, vulkan::PIPELINE_STAGE_TRANSFER_BIT, 0, 0 as u32, std::ptr::null(), 0, std::ptr::null(), 1, &barrier) };
+    let region = vulkan::BufferImageCopy {
+        bufferOffset: 0,
+        bufferRowLength: 0,
+        bufferImageHeight: 0,
+        imageSubresource: vulkan::ImageSubresourceLayers {
+            aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
+            mipLevel: 0,
+            baseArrayLayer: 0,
+            layerCount: 1,
+        },
+        imageOffset: vulkan::Offset3D {
+            x: 0,
+            y: 0,
+            z: 0,
+        },
+        imageExtent: vulkan::Extent3D {
+            width,
+            height,
+            depth: 1,
+        },
+    };
+
+    unsafe { (device.vkCmdCopyBufferToImage)(barrier_command_buffer, buffer.handle, image, vulkan::IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region as *const vulkan::BufferImageCopy) };
+    end_command_buffer(device, command_pool, barrier_command_buffer);
+
+    let second_barrier = vulkan::ImageMemoryBarrier {
+        sType: vulkan::STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        pNext: std::ptr::null(),
+        oldLayout: vulkan::IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        newLayout: vulkan::IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        srcQueueFamilyIndex: vulkan::QUEUE_FAMILY_IGNORED,
+        dstQueueFamilyIndex: vulkan::QUEUE_FAMILY_IGNORED,
+        image,
+        subresourceRange: vulkan::ImageSubresourceRange {
+            aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
+            baseMipLevel: 0,
+            levelCount: 1,
+            baseArrayLayer: 0,
+            layerCount: 1,
+        },
+        srcAccessMask: vulkan::ACCESS_TRANSFER_WRITE_BIT,
+        dstAccessMask: vulkan::ACCESS_SHADER_READ_BIT,
+    };
+
+    let second_barrier_command_buffer = begin_command_buffer(device, command_pool);
+    unsafe { (device.vkCmdPipelineBarrier)(second_barrier_command_buffer, vulkan::PIPELINE_STAGE_TRANSFER_BIT, vulkan::PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0 as u32, std::ptr::null(), 0, std::ptr::null(), 1, &second_barrier) };
+    end_command_buffer(device, command_pool, second_barrier_command_buffer);
+
+    unsafe { (device.vkFreeMemory)(device.handle, buffer.memory, std::ptr::null()) };
+    unsafe { (device.vkDestroyBuffer)(device.handle, buffer.handle, std::ptr::null()) };
+
+    Ok(())
+}
+
+fn allocate_device_memory(device: &Device, requirements: vulkan::MemoryRequirements) -> *mut vulkan::DeviceMemory {
+    let mut memory_index: u32 = 0;
+
+    let property = vulkan::MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    for i in 0..device.properties.memoryTypeCount {
+        if requirements.memoryTypeBits & (1 as u32) << i != 0 && device.properties.memoryTypes[i as usize].propertyFlags & property == property {
+            memory_index = i as u32;
+            break;
+        }
+    }
+
+    let image_memory_allocate_info = vulkan::MemoryAllocateInfo {
+        sType: vulkan::STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        pNext: std::ptr::null(),
+        allocationSize: requirements.size,
+        memoryTypeIndex: memory_index,
+    };
+
+    let mut memory: *mut vulkan::DeviceMemory = std::ptr::null_mut();
+    unsafe { (device.vkAllocateMemory)(device.handle, &image_memory_allocate_info as *const vulkan::MemoryAllocateInfo, std::ptr::null(), &mut memory as *mut *mut vulkan::DeviceMemory) };
+    memory
+}
+
+fn create_image(
+    device: &Device,
+    format: u32,
+    usage: u32,
+    aspect: u32,
+    width: u32,
+    height: u32,
+) -> Result<Image, LoadError> {
+    let info = vulkan::ImageCreateInfo {
+        sType: vulkan::STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        pNext: std::ptr::null(),
+        flags: 0,
+        imageType: vulkan::IMAGE_TYPE_2D,
+        extent: vulkan::Extent3D {
+            width,
+            height,
+            depth: 1,
+        },
+        mipLevels: 1,
+        arrayLayers: 1,
+        format,
+        tiling: vulkan::IMAGE_TILING_OPTIMAL,
+        initialLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
+        usage,
+        sharingMode: vulkan::SHARING_MODE_EXCLUSIVE,
+        samples: vulkan::SAMPLE_COUNT_1_BIT,
+        queueFamilyIndexCount: 0,
+        pQueueFamilyIndices: std::ptr::null(),
+    };
+
+    let mut image: *mut vulkan::Image = std::ptr::null_mut();
+    if 0 != unsafe { (device.vkCreateImage)(device.handle, &info as *const vulkan::ImageCreateInfo, std::ptr::null(), &mut image as *mut *mut vulkan::Image) } {
+        return Err(LoadError::ImageFail);
+    }
+
+    let mut memory_requirements = std::mem::MaybeUninit::<vulkan::MemoryRequirements>::uninit();
+    unsafe { (device.vkGetImageMemoryRequirements)(device.handle, image, memory_requirements.as_mut_ptr() as *mut vulkan::MemoryRequirements) };
+
+    let memory_requirements = unsafe { memory_requirements.assume_init() };
+
+    let image_memory = allocate_device_memory(device, memory_requirements);
+    unsafe { (device.vkBindImageMemory)(device.handle, image, image_memory, 0) };
+
+    let view = create_image_view(device, image, format, aspect);
+
+    Ok(Image {
+        handle: image,
+        memory: image_memory,
+        view,
+    })
+}
+
+fn create_image_view(device: &Device, image: *mut vulkan::Image, format: u32, aspect: u32) -> *mut vulkan::ImageView {
+    let info = vulkan::ImageViewCreateInfo {
+        sType: vulkan::STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        flags: 0,
+        pNext: std::ptr::null(),
+        image,
+        viewType: vulkan::IMAGE_VIEW_TYPE_2D,
+        format,
+        subresourceRange: vulkan::ImageSubresourceRange {
+            aspectMask: aspect,
+            baseMipLevel: 0,
+            levelCount: 1,
+            baseArrayLayer: 0,
+            layerCount: 1,
+        },
+        components: vulkan::ComponentMapping {
+            r: vulkan::COMPONENT_SWIZZLE_IDENTITY,
+            g: vulkan::COMPONENT_SWIZZLE_IDENTITY,
+            b: vulkan::COMPONENT_SWIZZLE_IDENTITY,
+            a: vulkan::COMPONENT_SWIZZLE_IDENTITY,
+        },
+    };
+
+    let mut image_view: *mut vulkan::ImageView = std::ptr::null_mut();
+    unsafe { (device.vkCreateImageView)(device.handle, &info as *const vulkan::ImageViewCreateInfo, std::ptr::null(), &mut image_view as *mut *mut vulkan::ImageView) };
+    image_view
+}
+
 pub fn swapchain(
     device: &Device,
     graphics_pipeline: &GraphicsPipeline,
-    font: TrueTypeFont,
+    font: &TrueTypeFont,
     chars_len: usize,
     width: u32,
     height: u32
 ) -> Result<Swapchain, LoadError> {
     let present_mode = vulkan::PRESENT_MODE_FIFO_KHR;
-    let extent = if device.capabilities.currentExtent.width != 0xFFFFFFFF {
-        vulkan::Extent2D {
-            width: device.capabilities.currentExtent.width,
-            height: device.capabilities.currentExtent.height,
-        }
-    } else {
-        vulkan::Extent2D {
-            width: width.clamp(device.capabilities.minImageExtent.width, device.capabilities.maxImageExtent.width),
-            height: height.clamp(device.capabilities.minImageExtent.height, device.capabilities.maxImageExtent.height),
-        }
+    let extent = vulkan::Extent2D {
+        width,
+        height,
     };
 
     let image_count = if device.capabilities.maxImageCount > 0 {
@@ -1121,108 +1368,96 @@ pub fn swapchain(
     let mut image_views: Vec<*mut vulkan::ImageView> = Vec::with_capacity(count as usize);
 
     for i in 0..count {
-        let image_view_info = vulkan::ImageViewCreateInfo {
-            sType: vulkan::STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            flags: 0,
-            pNext: std::ptr::null(),
-            image: images[i as usize],
-            format: graphics_pipeline.surface_format.format,
-            viewType: vulkan::IMAGE_VIEW_TYPE_2D,
-            subresourceRange: vulkan::ImageSubresourceRange {
-                aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
-                baseMipLevel: 0,
-                levelCount: 1,
-                baseArrayLayer: 0,
-                layerCount: 1,
-            },
-            components: vulkan::ComponentMapping {
-                r: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-                g: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-                b: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-                a: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-            },
-        };
-
-        let mut image_view: *mut vulkan::ImageView = std::ptr::null_mut();
-        unsafe { (device.vkCreateImageView)(device.handle, &image_view_info as *const vulkan::ImageViewCreateInfo, std::ptr::null(), &mut image_view as *mut *mut vulkan::ImageView) };
-
-        image_views.push(image_view);
+        image_views.push(create_image_view(device, images[i as usize], graphics_pipeline.surface_format.format, vulkan::IMAGE_ASPECT_COLOR_BIT));
     }
+// create_image(device: &Device, command_pool: *mut vulkan::CommandPool, data: &[u8], width: u32, height: u32) -> Result<Image, LoadError> {
 
-    let depth_info = vulkan::ImageCreateInfo {
-        sType: vulkan::STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        pNext: std::ptr::null(),
-        flags: 0,
-        imageType: vulkan::IMAGE_VIEW_TYPE_2D,
-        format: graphics_pipeline.depth_format,
-        extent: vulkan::Extent3D {
-            width: extent.width,
-            height: extent.height,
-            depth: 1,
-        },
-        mipLevels: 1,
-        arrayLayers: 1,
-        samples: vulkan::SAMPLE_COUNT_1_BIT,
-        tiling: vulkan::IMAGE_TILING_OPTIMAL,
-        usage: vulkan::IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-        sharingMode: vulkan::SHARING_MODE_EXCLUSIVE,
-        queueFamilyIndexCount: 0,
-        pQueueFamilyIndices: std::ptr::null(),
-        initialLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
-    };
+    let depth_image = create_image(
+        device,
+        graphics_pipeline.depth_format,
+        vulkan::IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        vulkan::IMAGE_ASPECT_DEPTH_BIT,
+        extent.width,
+        extent.height
+    )?;
+    // let depth_image_view = create_image_view(device, depth_image.handle, graphics_pipeline.depth_format);
 
-    let mut depth_image: *mut vulkan::Image = std::ptr::null_mut();
-    unsafe { (device.vkCreateImage)(device.handle, &depth_info as *const vulkan::ImageCreateInfo, std::ptr::null(), &mut depth_image as *mut *mut vulkan::Image) } ;
+    // let depth_info = vulkan::ImageCreateInfo {
+    //     sType: vulkan::STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+    //     pNext: std::ptr::null(),
+    //     flags: 0,
+    //     imageType: vulkan::IMAGE_VIEW_TYPE_2D,
+    //     format: graphics_pipeline.depth_format,
+    //     extent: vulkan::Extent3D {
+    //         width: extent.width,
+    //         height: extent.height,
+    //         depth: 1,
+    //     },
+    //     mipLevels: 1,
+    //     arrayLayers: 1,
+    //     samples: vulkan::SAMPLE_COUNT_1_BIT,
+    //     tiling: vulkan::IMAGE_TILING_OPTIMAL,
+    //     usage: vulkan::IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+    //     sharingMode: vulkan::SHARING_MODE_EXCLUSIVE,
+    //     queueFamilyIndexCount: 0,
+    //     pQueueFamilyIndices: std::ptr::null(),
+    //     initialLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
+    // };
 
-    let mut depth_image_memory_requirements = std::mem::MaybeUninit::<vulkan::MemoryRequirements>::uninit();
-    unsafe { (device.vkGetImageMemoryRequirements)(device.handle, depth_image, depth_image_memory_requirements.as_mut_ptr() as *mut vulkan::MemoryRequirements) };
-    let depth_image_memory_requirements = unsafe { depth_image_memory_requirements.assume_init() };
+    // let mut depth_image: *mut vulkan::Image = std::ptr::null_mut();
+    // unsafe { (device.vkCreateImage)(device.handle, &depth_info as *const vulkan::ImageCreateInfo, std::ptr::null(), &mut depth_image as *mut *mut vulkan::Image) } ;
 
-    let mut memory_index: u32 = 0;
-    for i in 0..device.properties.memoryTypeCount {
-        if depth_image_memory_requirements.memoryTypeBits & (1 as u32) << i != 0 {
-            memory_index = i as u32;
-            break;
-        }
-    }
+    // let mut depth_image_memory_requirements = std::mem::MaybeUninit::<vulkan::MemoryRequirements>::uninit();
+    // unsafe { (device.vkGetImageMemoryRequirements)(device.handle, depth_image.handle, depth_image_memory_requirements.as_mut_ptr() as *mut vulkan::MemoryRequirements) };
+    // let depth_image_memory_requirements = unsafe { depth_image_memory_requirements.assume_init() };
+    // let depth_image_memory = allocate_device_memory(device, depth_image_memory_requirements);
+    // let depth_image_memory_requirements = unsafe { depth_image_memory_requirements.assume_init() };
 
-    let depth_image_info = vulkan::MemoryAllocateInfo {
-        sType: vulkan::STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        pNext: std::ptr::null(),
-        allocationSize: depth_image_memory_requirements.size,
-        memoryTypeIndex: memory_index,
-    };
+    // let mut memory_index: u32 = 0;
+    // for i in 0..device.properties.memoryTypeCount {
+    //     if depth_image_memory_requirements.memoryTypeBits & (1 as u32) << i != 0 {
+    //         memory_index = i as u32;
+    //         break;
+    //     }
+    // }
 
-    let mut depth_image_memory: *mut vulkan::DeviceMemory = std::ptr::null_mut();
-    if 0 != unsafe { (device.vkAllocateMemory)(device.handle, &depth_image_info as *const vulkan::MemoryAllocateInfo, std::ptr::null(), &mut depth_image_memory as *mut *mut vulkan::DeviceMemory) } {
-        return Err(LoadError::SwapchainDepthImage);
-    }
+    // let depth_image_info = vulkan::MemoryAllocateInfo {
+    //     sType: vulkan::STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+    //     pNext: std::ptr::null(),
+    //     allocationSize: depth_image_memory_requirements.size,
+    //     memoryTypeIndex: memory_index,
+    // };
 
-    unsafe { (device.vkBindImageMemory)(device.handle, depth_image, depth_image_memory, 0) };
-    let depth_image_view_info = vulkan::ImageViewCreateInfo {
-        sType: vulkan::STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        flags: 0,
-        pNext: std::ptr::null(),
-        image: depth_image,
-        format: graphics_pipeline.depth_format,
-        viewType: vulkan::IMAGE_VIEW_TYPE_2D,
-        subresourceRange: vulkan::ImageSubresourceRange {
-            aspectMask: vulkan::IMAGE_ASPECT_DEPTH_BIT,
-            baseMipLevel: 0,
-            levelCount: 1,
-            baseArrayLayer: 0,
-            layerCount: 1,
-        },
-        components: vulkan::ComponentMapping {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: 0,
-        },
-    };
+    // let mut depth_image_memory: *mut vulkan::DeviceMemory = std::ptr::null_mut();
+    // if 0 != unsafe { (device.vkAllocateMemory)(device.handle, &depth_image_info as *const vulkan::MemoryAllocateInfo, std::ptr::null(), &mut depth_image_memory as *mut *mut vulkan::DeviceMemory) } {
+    //     return Err(LoadError::SwapchainDepthImage);
+    // }
 
-    let mut depth_image_view: *mut vulkan::ImageView = std::ptr::null_mut();
-    unsafe { (device.vkCreateImageView)(device.handle, &depth_image_view_info as *const vulkan::ImageViewCreateInfo, std::ptr::null(), &mut depth_image_view as *mut *mut vulkan::ImageView) };
+    // unsafe { (device.vkBindImageMemory)(device.handle, depth_image.handle, depth_image_memory, 0) };
+    // let depth_image_view_info = vulkan::ImageViewCreateInfo {
+    //     sType: vulkan::STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+    //     flags: 0,
+    //     pNext: std::ptr::null(),
+    //     image: depth_image,
+    //     format: graphics_pipeline.depth_format,
+    //     viewType: vulkan::IMAGE_VIEW_TYPE_2D,
+    //     subresourceRange: vulkan::ImageSubresourceRange {
+    //         aspectMask: vulkan::IMAGE_ASPECT_DEPTH_BIT,
+    //         baseMipLevel: 0,
+    //         levelCount: 1,
+    //         baseArrayLayer: 0,
+    //         layerCount: 1,
+    //     },
+    //     components: vulkan::ComponentMapping {
+    //         r: 0,
+    //         g: 0,
+    //         b: 0,
+    //         a: 0,
+    //     },
+    // };
+
+    // let mut depth_image_view: *mut vulkan::ImageView = std::ptr::null_mut();
+    // unsafe { (device.vkCreateImageView)(device.handle, &depth_image_view_info as *const vulkan::ImageViewCreateInfo, std::ptr::null(), &mut depth_image_view as *mut *mut vulkan::ImageView) };
 
     let mut framebuffers: Vec<*mut vulkan::Framebuffer> = Vec::with_capacity(count as usize);
     for i in 0..count {
@@ -1232,7 +1467,7 @@ pub fn swapchain(
             pNext: std::ptr::null(),
             renderPass: graphics_pipeline.render_pass,
             attachmentCount: 2,
-            pAttachments: [image_views[i as usize], depth_image_view].as_ptr() as *const vulkan::ImageView,
+            pAttachments: [image_views[i as usize], depth_image.view].as_ptr() as *const vulkan::ImageView,
             width: extent.width,
             height: extent.height,
             layers: 1,
@@ -1296,34 +1531,29 @@ pub fn swapchain(
     let mut global_uniform_dst: *mut f32 = std::ptr::null_mut();
     let ratio = height as f32 / width as f32;
 
-    // let glyph_x_pos = (i as u32 % font.glyphs_per_row) as f32 * normalized_glyph_width;
-    // let glyph_y_pos = (i as u32 / font.glyphs_per_row) as f32 * normalized_glyph_height;
-    // let normalized_glyph_width: f32 = font.glyph_width as f32 / font.width as f32;
-    // let normalized_glyph_height: f32 = font.glyph_height as f32 / font.height as f32;
-
     let global_uniform = [
         ratio,
-        font.scale,
+        1.0,//font.scale / 2.0,
         -1.0,
         -1.0,
     ];
-
 
     let global_uniform_buffer = buffer::<f32>(device, vulkan::BUFFER_USAGE_UNIFORM_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, global_uniform.len())?;
     unsafe { (device.vkMapMemory)(device.handle, global_uniform_buffer.memory, 0, global_uniform.len() as u64, 0, std::mem::transmute::<&mut *mut f32, *mut *mut std::ffi::c_void>(&mut global_uniform_dst)) };
     unsafe { std::ptr::copy(global_uniform.as_ptr(), global_uniform_dst, global_uniform.len()) };
     let global_uniform_map = unsafe { Vec::from_raw_parts(global_uniform_dst, global_uniform.len(), 0) };
 
-    let uniform_descriptor_set_allocate_info = vulkan::DescriptorSetAllocateInfo {
-        sType: vulkan::STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        pNext: std::ptr::null(),
-        descriptorPool: graphics_pipeline.global_descriptor_pool,
-        descriptorSetCount: 1,
-        pSetLayouts: &graphics_pipeline.global_descriptor_set_layout as *const *mut vulkan::DescriptorSetLayout,
-    };
+    // let uniform_descriptor_set_allocate_info = vulkan::DescriptorSetAllocateInfo {
+    //     sType: vulkan::STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+    //     pNext: std::ptr::null(),
+    //     descriptorPool: graphics_pipeline.global_descriptor_pool,
+    //     descriptorSetCount: 1,
+    //     pSetLayouts: &graphics_pipeline.global_descriptor_set_layout as *const *mut vulkan::DescriptorSetLayout,
+    // };
 
-    let mut uniform_descriptor_set: *mut vulkan::DescriptorSet = std::ptr::null_mut();
-    unsafe { (device.vkAllocateDescriptorSets)(device.handle, &uniform_descriptor_set_allocate_info as *const vulkan::DescriptorSetAllocateInfo, &mut uniform_descriptor_set as *mut *mut vulkan::DescriptorSet) };
+    // let mut uniform_descriptor_set: *mut vulkan::DescriptorSet = std::ptr::null_mut();
+    // unsafe { (device.vkAllocateDescriptorSets)(device.handle, &uniform_descriptor_set_allocate_info as *const vulkan::DescriptorSetAllocateInfo, &mut uniform_descriptor_set as *mut *mut vulkan::DescriptorSet) };
+    let uniform_descriptor_set = allocate_descriptor_set(device, graphics_pipeline.global_descriptor_pool, graphics_pipeline.global_descriptor_set_layout);
 
     let global_uniform_descriptor_info = vulkan::DescriptorBufferInfo {
         buffer: global_uniform_buffer.handle,
@@ -1346,38 +1576,59 @@ pub fn swapchain(
 
     unsafe { (device.vkUpdateDescriptorSets)(device.handle, 1, [global_uniform_write_descriptor_set].as_ptr() as *const vulkan::WriteDescriptorSet, 0, std::ptr::null()) };
 
-    let vertex_staging_buffer = buffer::<[f32; 2]>(device, vulkan::BUFFER_USAGE_TRANSFER_SRC_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, 4 * chars_len)?;
+    // let vertex_staging_buffer = buffer::<[f32; 2]>(device, vulkan::BUFFER_USAGE_TRANSFER_SRC_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, 4 * chars_len)?;
+    // let mut vertex_data: *mut [f32; 2] = std::ptr::null_mut();
+
+    // unsafe { (device.vkMapMemory)(device.handle, vertex_staging_buffer.memory, 0, (chars_len * 4 * std::mem::size_of::<[f32; 2]>()) as u64, 0, std::mem::transmute::<&mut *mut [f32; 2], *mut *mut std::ffi::c_void>(&mut vertex_data)) };
+    // let vertex_buffer = buffer::<[f32; 2]>(device, vulkan::BUFFER_USAGE_TRANSFER_DST_BIT | vulkan::BUFFER_USAGE_VERTEX_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, 4 * chars_len)?;
+    // let mut instance_vertex_buffer = unsafe { Vec::from_raw_parts(vertex_data, chars_len * 4, 0) };
+    // let vertex_command_buffer = begin_command_buffer(device, command_pool);
+
+    // for (i, metric) in font.metrics.iter().enumerate() {
+    //     let height = metric.height as f32 / font.height as f32;
+    //     let width = metric.width as f32 / font.width as f32;
+    //     let x_offset = metric.x_offset as f32 / font.width as f32;
+    //     let y_offset = metric.y_offset as f32 / font.height as f32;
+
+    //     let index: usize = i as usize * 4;
+
+    //     instance_vertex_buffer[index..(index + 4)].copy_from_slice(&[
+    //         [x_offset, y_offset + height],
+    //         [x_offset + width, y_offset + height],
+    //         [x_offset, y_offset],
+    //         [x_offset + width, y_offset],
+    //     ]);
+
+    //     let vertex_copy_info = vulkan::BufferCopy {
+    //         srcOffset: (4 * i as usize * std::mem::size_of::<[f32; 2]>()) as u64,
+    //         dstOffset: (4 * i as usize * std::mem::size_of::<[f32; 2]>()) as u64,
+    //         size: (4 * std::mem::size_of::<[f32; 2]>()) as u64,
+    //     };
+
+    //     unsafe { (device.vkCmdCopyBuffer)(vertex_command_buffer, vertex_staging_buffer.handle, vertex_buffer.handle, 1, &vertex_copy_info as *const vulkan::BufferCopy) };
+    // }
+
+    let vertex_staging_buffer = buffer::<[f32; 2]>(device, vulkan::BUFFER_USAGE_TRANSFER_SRC_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, 4)?;
     let mut vertex_data: *mut [f32; 2] = std::ptr::null_mut();
+    unsafe { (device.vkMapMemory)(device.handle, vertex_staging_buffer.memory, 0, (4 * std::mem::size_of::<[f32; 2]>()) as u64, 0, std::mem::transmute::<&mut *mut [f32; 2], *mut *mut std::ffi::c_void>(&mut vertex_data)) };
 
-    unsafe { (device.vkMapMemory)(device.handle, vertex_staging_buffer.memory, 0, (chars_len * 4 * std::mem::size_of::<[f32; 2]>()) as u64, 0, std::mem::transmute::<&mut *mut [f32; 2], *mut *mut std::ffi::c_void>(&mut vertex_data)) };
+    let vertex_buffer = buffer::<[f32; 2]>(device, vulkan::BUFFER_USAGE_TRANSFER_DST_BIT | vulkan::BUFFER_USAGE_VERTEX_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, 4)?;
+    let mut instance_vertex_buffer = unsafe { Vec::from_raw_parts(vertex_data, 4, 0) };
 
-    let normalized_glyph_width: f32 = font.glyph_width as f32 / font.width as f32;
-    let normalized_glyph_height: f32 = font.glyph_height as f32 / font.height as f32;
-
-    let vertex_buffer = buffer::<[f32; 2]>(device, vulkan::BUFFER_USAGE_TRANSFER_DST_BIT | vulkan::BUFFER_USAGE_VERTEX_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, 4 * chars_len)?;
-    let mut instance_vertex_buffer = unsafe { Vec::from_raw_parts(vertex_data, chars_len * 4, 0) };
+    instance_vertex_buffer[0..4].copy_from_slice(&[
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.0, 0.0],
+        [1.0, 0.0],
+    ]);
+    let vertex_copy_info = vulkan::BufferCopy {
+        srcOffset: 0,
+        dstOffset: 0,
+        size: (4 * std::mem::size_of::<[f32; 2]>()) as u64,
+    };
     let vertex_command_buffer = begin_command_buffer(device, command_pool);
 
-    for i in 0..chars_len {
-        let glyph_x_pos = (i as u32 % font.glyphs_per_row) as f32 * normalized_glyph_width;
-        let glyph_y_pos = (i as u32 / font.glyphs_per_row) as f32 * normalized_glyph_height;
-
-        let index: usize = i as usize * 4;
-        instance_vertex_buffer[index..(index + 4)].copy_from_slice(&[
-            [glyph_x_pos, glyph_y_pos + normalized_glyph_height],
-            [glyph_x_pos + normalized_glyph_width, glyph_y_pos + normalized_glyph_height],
-            [glyph_x_pos, glyph_y_pos],
-            [glyph_x_pos + normalized_glyph_height, glyph_y_pos],
-        ]);
-
-        let vertex_copy_info = vulkan::BufferCopy {
-            srcOffset: (4 * i as usize * std::mem::size_of::<[f32; 2]>()) as u64,
-            dstOffset: (4 * i as usize * std::mem::size_of::<[f32; 2]>()) as u64,
-            size: (4 * std::mem::size_of::<[f32; 2]>()) as u64,
-        };
-
-        unsafe { (device.vkCmdCopyBuffer)(vertex_command_buffer, vertex_staging_buffer.handle, vertex_buffer.handle, 1, &vertex_copy_info as *const vulkan::BufferCopy) };
-    }
+    unsafe { (device.vkCmdCopyBuffer)(vertex_command_buffer, vertex_staging_buffer.handle, vertex_buffer.handle, 1, &vertex_copy_info as *const vulkan::BufferCopy) };
 
     unsafe { (device.vkUnmapMemory)(device.handle, vertex_staging_buffer.memory) };
 
@@ -1406,220 +1657,21 @@ pub fn swapchain(
     unsafe { (device.vkFreeMemory)(device.handle, index_staging_buffer.memory, std::ptr::null()) };
     unsafe { (device.vkDestroyBuffer)(device.handle, index_staging_buffer.handle, std::ptr::null()) };
 
-    let pixels = font.texture;
-    let texture_buffer = buffer::<u8>(device, vulkan::BUFFER_USAGE_TRANSFER_SRC_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, pixels.len())?;
+    let texture_image = create_image(
+        device,
+        vulkan::R8_UNORM,
+        vulkan::IMAGE_USAGE_TRANSFER_DST_BIT | vulkan::IMAGE_USAGE_SAMPLED_BIT,
+        vulkan::IMAGE_ASPECT_COLOR_BIT,
+        font.width as u32,
+        font.height as u32
+    )?;
+    copy_buffer_to_image(device, command_pool, texture_image.handle, &font.texture, font.width as u32, font.height as u32)?;
 
-    let mut dst: *mut u8 = std::ptr::null_mut();
-    unsafe { (device.vkMapMemory)(device.handle, texture_buffer.memory, 0, pixels.len() as u64, 0, std::mem::transmute::<&mut *mut u8, *mut *mut std::ffi::c_void>(&mut dst)) };
-    unsafe { std::ptr::copy(pixels.as_ptr(), dst, pixels.len()) };
-    unsafe { (device.vkUnmapMemory)(device.handle, texture_buffer.memory) };
+    let texture_sampler = create_sampler(device);
+    let texture_descriptor_set = allocate_descriptor_set(device, graphics_pipeline.global_descriptor_pool, graphics_pipeline.texture_descriptor_set_layout);
 
-    let texture_image_info = vulkan::ImageCreateInfo {
-        sType: vulkan::STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        pNext: std::ptr::null(),
-        flags: 0,
-        imageType: vulkan::IMAGE_TYPE_2D,
-        extent: vulkan::Extent3D {
-            width: font.width,
-            height: font.height,
-            depth: 1,
-        },
-        mipLevels: 1,
-        arrayLayers: 1,
-        format: vulkan::R8_UNORM,
-        tiling: vulkan::IMAGE_TILING_OPTIMAL,
-        initialLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
-        usage: vulkan::IMAGE_USAGE_TRANSFER_DST_BIT | vulkan::IMAGE_USAGE_SAMPLED_BIT,
-        sharingMode: vulkan::SHARING_MODE_EXCLUSIVE,
-        samples: vulkan::SAMPLE_COUNT_1_BIT,
-        queueFamilyIndexCount: 0,
-        pQueueFamilyIndices: std::ptr::null(),
-    };
+    update_image_descriptor_set(device, texture_image.view, texture_sampler, texture_descriptor_set);
 
-    let mut texture_image: *mut vulkan::Image = std::ptr::null_mut();
-    if 0 != unsafe { (device.vkCreateImage)(device.handle, &texture_image_info as *const vulkan::ImageCreateInfo, std::ptr::null(), &mut texture_image as *mut *mut vulkan::Image) } {
-        return Err(LoadError::ImageFail);
-    }
-
-    let mut memory_requirements = std::mem::MaybeUninit::<vulkan::MemoryRequirements>::uninit();
-    unsafe { (device.vkGetImageMemoryRequirements)(device.handle, texture_image, memory_requirements.as_mut_ptr() as *mut vulkan::MemoryRequirements) };
-
-    let memory_requirements = unsafe { memory_requirements.assume_init() };
-    let mut memory_index: u32 = 0;
-
-    let property = vulkan::MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    for i in 0..device.properties.memoryTypeCount {
-        if memory_requirements.memoryTypeBits & (1 as u32) << i != 0 && device.properties.memoryTypes[i as usize].propertyFlags & property == property {
-            memory_index = i as u32;
-            break;
-        }
-    }
-
-    let texture_image_memory_allocate_info = vulkan::MemoryAllocateInfo {
-        sType: vulkan::STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        pNext: std::ptr::null(),
-        allocationSize: memory_requirements.size,
-        memoryTypeIndex: memory_index as u32,
-    };
-
-    let mut texture_image_memory: *mut vulkan::DeviceMemory = std::ptr::null_mut();
-    unsafe { (device.vkAllocateMemory)(device.handle, &texture_image_memory_allocate_info as *const vulkan::MemoryAllocateInfo, std::ptr::null(), &mut texture_image_memory as *mut *mut vulkan::DeviceMemory) };
-    unsafe { (device.vkBindImageMemory)(device.handle, texture_image, texture_image_memory, 0) };
-
-    let barrier_command_buffer = begin_command_buffer(device, command_pool);
-
-    let barrier = vulkan::ImageMemoryBarrier {
-        sType: vulkan::STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        pNext: std::ptr::null(),
-        oldLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
-        newLayout: vulkan::IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        srcQueueFamilyIndex: vulkan::QUEUE_FAMILY_IGNORED,
-        dstQueueFamilyIndex: vulkan::QUEUE_FAMILY_IGNORED,
-        image: texture_image,
-        subresourceRange: vulkan::ImageSubresourceRange {
-            aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
-            baseMipLevel: 0,
-            levelCount: 1,
-            baseArrayLayer: 0,
-            layerCount: 1,
-        },
-        srcAccessMask: 0,
-        dstAccessMask: vulkan::ACCESS_TRANSFER_WRITE_BIT,
-    };
-
-    unsafe { (device.vkCmdPipelineBarrier)(barrier_command_buffer, vulkan::PIPELINE_STAGE_TOP_OF_PIPE_BIT, vulkan::PIPELINE_STAGE_TRANSFER_BIT, 0, 0 as u32, std::ptr::null(), 0, std::ptr::null(), 1, &barrier) };
-    let region = vulkan::BufferImageCopy {
-        bufferOffset: 0,
-        bufferRowLength: 0,
-        bufferImageHeight: 0,
-        imageSubresource: vulkan::ImageSubresourceLayers {
-            aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
-            mipLevel: 0,
-            baseArrayLayer: 0,
-            layerCount: 1,
-        },
-        imageOffset: vulkan::Offset3D {
-            x: 0,
-            y: 0,
-            z: 0,
-        },
-        imageExtent: vulkan::Extent3D {
-            width: font.width,
-            height: font.height,
-            depth: 1,
-        },
-    };
-
-    unsafe { (device.vkCmdCopyBufferToImage)(barrier_command_buffer, texture_buffer.handle, texture_image, vulkan::IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region as *const vulkan::BufferImageCopy) };
-    end_command_buffer(device, command_pool, barrier_command_buffer);
-
-    let second_barrier = vulkan::ImageMemoryBarrier {
-        sType: vulkan::STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        pNext: std::ptr::null(),
-        oldLayout: vulkan::IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        newLayout: vulkan::IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        srcQueueFamilyIndex: vulkan::QUEUE_FAMILY_IGNORED,
-        dstQueueFamilyIndex: vulkan::QUEUE_FAMILY_IGNORED,
-        image: texture_image,
-        subresourceRange: vulkan::ImageSubresourceRange {
-            aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
-            baseMipLevel: 0,
-            levelCount: 1,
-            baseArrayLayer: 0,
-            layerCount: 1,
-        },
-        srcAccessMask: vulkan::ACCESS_TRANSFER_WRITE_BIT,
-        dstAccessMask: vulkan::ACCESS_SHADER_READ_BIT,
-    };
-
-    let second_barrier_command_buffer = begin_command_buffer(device, command_pool);
-    unsafe { (device.vkCmdPipelineBarrier)(second_barrier_command_buffer, vulkan::PIPELINE_STAGE_TRANSFER_BIT, vulkan::PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0 as u32, std::ptr::null(), 0, std::ptr::null(), 1, &second_barrier) };
-    end_command_buffer(device, command_pool, second_barrier_command_buffer);
-
-    unsafe { (device.vkFreeMemory)(device.handle, texture_buffer.memory, std::ptr::null()) };
-    unsafe { (device.vkDestroyBuffer)(device.handle, texture_buffer.handle, std::ptr::null()) };
-
-    let image_view_info = vulkan::ImageViewCreateInfo {
-        sType: vulkan::STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        flags: 0,
-        pNext: std::ptr::null(),
-        image: texture_image,
-        viewType: vulkan::IMAGE_VIEW_TYPE_2D,
-        format: vulkan::R8_UNORM,
-        subresourceRange: vulkan::ImageSubresourceRange {
-            aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
-            baseMipLevel: 0,
-            levelCount: 1,
-            baseArrayLayer: 0,
-            layerCount: 1,
-        },
-        components: vulkan::ComponentMapping {
-            r: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-            g: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-            b: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-            a: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-        },
-    };
-
-    let mut texture_image_view: *mut vulkan::ImageView = std::ptr::null_mut();
-    unsafe { (device.vkCreateImageView)(device.handle, &image_view_info as *const vulkan::ImageViewCreateInfo, std::ptr::null(), &mut texture_image_view as *mut *mut vulkan::ImageView) };
-
-    let texture_sampler_info = vulkan::SamplerCreateInfo {
-        sType: vulkan::STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        pNext: std::ptr::null(),
-        flags: 0,
-        magFilter: vulkan::FILTER_LINEAR,
-        minFilter: vulkan::FILTER_LINEAR,
-        addressModeU: vulkan::SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-        addressModeV: vulkan::SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-        addressModeW: vulkan::SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
-        anisotropyEnable: vulkan::FALSE,
-        maxAnisotropy: 1.0,
-        borderColor: vulkan::BORDER_COLOR_INT_OPAQUE_BLACK,
-        unnormalizedCoordinates: vulkan::FALSE,
-        compareEnable: vulkan::FALSE,
-        compareOp: vulkan::COMPARE_OP_ALWAYS,
-        mipmapMode: vulkan::SAMPLER_MIPMAP_MODE_LINEAR,
-        mipLodBias: 0.0,
-        minLod: 0.0,
-        maxLod: 0.0,
-    };
-
-    let mut texture_sampler: *mut vulkan::Sampler = std::ptr::null_mut();
-    unsafe { (device.vkCreateSampler)( device.handle, &texture_sampler_info as *const vulkan::SamplerCreateInfo, std::ptr::null(), &mut texture_sampler as *mut *mut vulkan::Sampler) };
-    let texture_descriptor_set_allocate_info = vulkan::DescriptorSetAllocateInfo {
-        sType: vulkan::STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        pNext: std::ptr::null(),
-        descriptorPool: graphics_pipeline.texture_descriptor_pool,
-        descriptorSetCount: 1,
-        pSetLayouts: &graphics_pipeline.texture_descriptor_set_layout as *const *mut vulkan::DescriptorSetLayout,
-    };
-
-    let mut texture_descriptor_set: *mut vulkan::DescriptorSet = std::ptr::null_mut();
-    unsafe { (device.vkAllocateDescriptorSets)(device.handle, &texture_descriptor_set_allocate_info as *const vulkan::DescriptorSetAllocateInfo, &mut texture_descriptor_set as *mut *mut vulkan::DescriptorSet) };
-
-    let texture_descriptor_image_info = vulkan::DescriptorImageInfo {
-        imageLayout: vulkan::IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        imageView: texture_image_view,
-        sampler: texture_sampler,
-    };
-
-    let texture_write_descriptor_set = vulkan::WriteDescriptorSet {
-        sType: vulkan::STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        pNext: std::ptr::null(),
-        dstSet: texture_descriptor_set,
-        dstBinding: 0,
-        dstArrayElement: 0,
-        descriptorCount: 1,
-        descriptorType: vulkan::DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        pImageInfo: &texture_descriptor_image_info as *const vulkan::DescriptorImageInfo,
-        pBufferInfo: std::ptr::null(),
-        pTexelBufferView: std::ptr::null(),
-    };
-
-    unsafe { (device.vkUpdateDescriptorSets)(device.handle, 1, &texture_write_descriptor_set as *const vulkan::WriteDescriptorSet, 0, std::ptr::null()) };
-
-    let h_space = 2.0;
     let ready_command_buffers = (0..count).map(|_| false).collect::<Vec<bool>>();
 
     Ok(Swapchain {
@@ -1627,18 +1679,12 @@ pub fn swapchain(
         image_views,
         framebuffers,
         depth_image,
-        depth_image_memory,
-        depth_image_view,
         extent,
 
-        h_space,
-
         texture_image,
-        texture_image_memory,
-        texture_image_view,
         texture_sampler,
-
         texture_descriptor_set,
+
         uniform_descriptor_set,
         global_uniform_buffer,
         global_uniform_map,
@@ -1710,9 +1756,9 @@ pub fn recreate_swapchain(device: &Device, swapchain: &mut Swapchain, graphics_p
             (device.vkDestroyFramebuffer)(device.handle, *framebuffer, null);
         }
 
-        (device.vkDestroyImageView)(device.handle, swapchain.depth_image_view, null);
-        (device.vkFreeMemory)(device.handle, swapchain.depth_image_memory, null);
-        (device.vkDestroyImage)(device.handle, swapchain.depth_image, null);
+        (device.vkDestroyImageView)(device.handle, swapchain.depth_image.view, null);
+        (device.vkFreeMemory)(device.handle, swapchain.depth_image.memory, null);
+        (device.vkDestroyImage)(device.handle, swapchain.depth_image.handle, null);
         (device.vkDestroySwapchainKHR)(device.handle, swapchain.handle, null);
     };
 
@@ -1774,105 +1820,90 @@ pub fn recreate_swapchain(device: &Device, swapchain: &mut Swapchain, graphics_p
     unsafe { (device.vkGetSwapchainImagesKHR)(device.handle, swapchain.handle, &mut count as *mut u32, images.as_mut_ptr() as *mut *mut vulkan::Image) };
 
     for i in 0..count {
-        let image_view_info = vulkan::ImageViewCreateInfo {
-            sType: vulkan::STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            flags: 0,
-            pNext: std::ptr::null(),
-            image: images[i as usize],
-            format: graphics_pipeline.surface_format.format,
-            viewType: vulkan::IMAGE_VIEW_TYPE_2D,
-            subresourceRange: vulkan::ImageSubresourceRange {
-                aspectMask: vulkan::IMAGE_ASPECT_COLOR_BIT,
-                baseMipLevel: 0,
-                levelCount: 1,
-                baseArrayLayer: 0,
-                layerCount: 1,
-            },
-            components: vulkan::ComponentMapping {
-                r: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-                g: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-                b: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-                a: vulkan::COMPONENT_SWIZZLE_IDENTITY,
-            },
-        };
-
-        let mut image_view: *mut vulkan::ImageView = std::ptr::null_mut();
-        unsafe { (device.vkCreateImageView)(device.handle, &image_view_info as *const vulkan::ImageViewCreateInfo, std::ptr::null(), &mut image_view as *mut *mut vulkan::ImageView) };
-
-        swapchain.image_views[i as usize] = image_view;
+        swapchain.image_views[i as usize] = create_image_view(device, images[i as usize], graphics_pipeline.surface_format.format, vulkan::IMAGE_ASPECT_COLOR_BIT);
     }
 
-    let depth_info = vulkan::ImageCreateInfo {
-        sType: vulkan::STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        pNext: std::ptr::null(),
-        flags: 0,
-        imageType: vulkan::IMAGE_VIEW_TYPE_2D,
-        format: graphics_pipeline.depth_format,
-        extent: vulkan::Extent3D {
-            width: swapchain.extent.width,
-            height: swapchain.extent.height,
-            depth: 1,
-        },
-        mipLevels: 1,
-        arrayLayers: 1,
-        samples: vulkan::SAMPLE_COUNT_1_BIT,
-        tiling: vulkan::IMAGE_TILING_OPTIMAL,
-        usage: vulkan::IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-        sharingMode: vulkan::SHARING_MODE_EXCLUSIVE,
-        queueFamilyIndexCount: 0,
-        pQueueFamilyIndices: std::ptr::null(),
-        initialLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
-    };
+    swapchain.depth_image = create_image(
+        device,
+        graphics_pipeline.depth_format,
+        vulkan::IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        vulkan::IMAGE_ASPECT_DEPTH_BIT,
+        swapchain.extent.width,
+        swapchain.extent.height
+    )?;
 
-    unsafe { (device.vkCreateImage)(device.handle, &depth_info as *const vulkan::ImageCreateInfo, std::ptr::null(), &mut swapchain.depth_image as *mut *mut vulkan::Image) } ;
+    // let depth_info = vulkan::ImageCreateInfo {
+    //     sType: vulkan::STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+    //     pNext: std::ptr::null(),
+    //     flags: 0,
+    //     imageType: vulkan::IMAGE_VIEW_TYPE_2D,
+    //     format: graphics_pipeline.depth_format,
+    //     extent: vulkan::Extent3D {
+    //         width: swapchain.extent.width,
+    //         height: swapchain.extent.height,
+    //         depth: 1,
+    //     },
+    //     mipLevels: 1,
+    //     arrayLayers: 1,
+    //     samples: vulkan::SAMPLE_COUNT_1_BIT,
+    //     tiling: vulkan::IMAGE_TILING_OPTIMAL,
+    //     usage: vulkan::IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+    //     sharingMode: vulkan::SHARING_MODE_EXCLUSIVE,
+    //     queueFamilyIndexCount: 0,
+    //     pQueueFamilyIndices: std::ptr::null(),
+    //     initialLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
+    // };
 
-    let mut depth_image_memory_requirements = std::mem::MaybeUninit::<vulkan::MemoryRequirements>::uninit();
-    unsafe { (device.vkGetImageMemoryRequirements)(device.handle, swapchain.depth_image, depth_image_memory_requirements.as_mut_ptr() as *mut vulkan::MemoryRequirements) };
-    let depth_image_memory_requirements = unsafe { depth_image_memory_requirements.assume_init() };
+    // unsafe { (device.vkCreateImage)(device.handle, &depth_info as *const vulkan::ImageCreateInfo, std::ptr::null(), &mut swapchain.depth_image as *mut *mut vulkan::Image) } ;
 
-    let mut memory_index: u32 = 0;
-    for i in 0..device.properties.memoryTypeCount {
-        if depth_image_memory_requirements.memoryTypeBits & (1 as u32) << i != 0 {
-            memory_index = i as u32;
-            break;
-        }
-    }
+    // let mut depth_image_memory_requirements = std::mem::MaybeUninit::<vulkan::MemoryRequirements>::uninit();
+    // unsafe { (device.vkGetImageMemoryRequirements)(device.handle, swapchain.depth_image.handle, depth_image_memory_requirements.as_mut_ptr() as *mut vulkan::MemoryRequirements) };
+    // let depth_image_memory_requirements = unsafe { depth_image_memory_requirements.assume_init() };
 
-    let depth_image_info = vulkan::MemoryAllocateInfo {
-        sType: vulkan::STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        pNext: std::ptr::null(),
-        allocationSize: depth_image_memory_requirements.size,
-        memoryTypeIndex: memory_index,
-    };
+    // let mut memory_index: u32 = 0;
+    // for i in 0..device.properties.memoryTypeCount {
+    //     if depth_image_memory_requirements.memoryTypeBits & (1 as u32) << i != 0 {
+    //         memory_index = i as u32;
+    //         break;
+    //     }
+    // }
 
-    if 0 != unsafe { (device.vkAllocateMemory)(device.handle, &depth_image_info as *const vulkan::MemoryAllocateInfo, std::ptr::null(), &mut swapchain.depth_image_memory as *mut *mut vulkan::DeviceMemory) } {
-        return Err(LoadError::SwapchainDepthImage);
-    }
+    // let depth_image_info = vulkan::MemoryAllocateInfo {
+    //     sType: vulkan::STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+    //     pNext: std::ptr::null(),
+    //     allocationSize: depth_image_memory_requirements.size,
+    //     memoryTypeIndex: memory_index,
+    // };
 
-    unsafe { (device.vkBindImageMemory)(device.handle, swapchain.depth_image, swapchain.depth_image_memory, 0) };
-    let depth_image_view_info = vulkan::ImageViewCreateInfo {
-        sType: vulkan::STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        flags: 0,
-        pNext: std::ptr::null(),
-        image: swapchain.depth_image,
-        format: graphics_pipeline.depth_format,
-        viewType: vulkan::IMAGE_VIEW_TYPE_2D,
-        subresourceRange: vulkan::ImageSubresourceRange {
-            aspectMask: vulkan::IMAGE_ASPECT_DEPTH_BIT,
-            baseMipLevel: 0,
-            levelCount: 1,
-            baseArrayLayer: 0,
-            layerCount: 1,
-        },
-        components: vulkan::ComponentMapping {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: 0,
-        },
-    };
+    // if 0 != unsafe { (device.vkAllocateMemory)(device.handle, &depth_image_info as *const vulkan::MemoryAllocateInfo, std::ptr::null(), &mut swapchain.depth_image_memory as *mut *mut vulkan::DeviceMemory) } {
+    //     return Err(LoadError::SwapchainDepthImage);
+    // }
 
-    unsafe { (device.vkCreateImageView)(device.handle, &depth_image_view_info as *const vulkan::ImageViewCreateInfo, std::ptr::null(), &mut swapchain.depth_image_view as *mut *mut vulkan::ImageView) };
+    // unsafe { (device.vkBindImageMemory)(device.handle, swapchain.depth_image, swapchain.depth_image_memory, 0) };
+    // let depth_image_view_info = vulkan::ImageViewCreateInfo {
+    //     sType: vulkan::STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+    //     flags: 0,
+    //     pNext: std::ptr::null(),
+    //     image: swapchain.depth_image,
+    //     format: graphics_pipeline.depth_format,
+    //     viewType: vulkan::IMAGE_VIEW_TYPE_2D,
+    //     subresourceRange: vulkan::ImageSubresourceRange {
+    //         aspectMask: vulkan::IMAGE_ASPECT_DEPTH_BIT,
+    //         baseMipLevel: 0,
+    //         levelCount: 1,
+    //         baseArrayLayer: 0,
+    //         layerCount: 1,
+    //     },
+    //     components: vulkan::ComponentMapping {
+    //         r: 0,
+    //         g: 0,
+    //         b: 0,
+    //         a: 0,
+    //     },
+    // };
+
+    // unsafe { (device.vkCreateImageView)(device.handle, &depth_image_view_info as *const vulkan::ImageViewCreateInfo, std::ptr::null(), &mut swapchain.depth_image_view as *mut *mut vulkan::ImageView) };
+
     for i in 0..count {
         let framebuffer_info = vulkan::FramebufferCreateInfo {
             sType: vulkan::STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -1880,7 +1911,7 @@ pub fn recreate_swapchain(device: &Device, swapchain: &mut Swapchain, graphics_p
             pNext: std::ptr::null(),
             renderPass: graphics_pipeline.render_pass,
             attachmentCount: 2,
-            pAttachments: [swapchain.image_views[i as usize], swapchain.depth_image_view].as_ptr() as *const vulkan::ImageView,
+            pAttachments: [swapchain.image_views[i as usize], swapchain.depth_image.view].as_ptr() as *const vulkan::ImageView,
             width: swapchain.extent.width,
             height: swapchain.extent.height,
             layers: 1,
@@ -1908,7 +1939,6 @@ pub fn record_command_buffer(
     extent: &vulkan::Extent2D,
     graphics_pipeline: &GraphicsPipeline,
     lines: &[&[u8]],
-    h_space: f32,
 ) {
     let begin_info = vulkan::CommandBufferBeginInfo {
         sType: vulkan::STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1936,7 +1966,7 @@ pub fn record_command_buffer(
         sType: vulkan::STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         pNext: std::ptr::null(),
         renderPass: graphics_pipeline.render_pass,
-        framebuffer: framebuffer,
+        framebuffer,
         renderArea: vulkan::Rect2D {
             offset: vulkan::Offset2D {
                 x: 0,
@@ -1980,14 +2010,18 @@ pub fn record_command_buffer(
     unsafe { (device.vkCmdBindIndexBuffer)(command_buffer, index_buffer as *mut vulkan::Buffer, 0, vulkan::INDEX_TYPE_UINT16) };
     unsafe { (device.vkCmdBindDescriptorSets)(command_buffer, vulkan::PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline.layout, 0, 2, [uniform_descriptor_set, texture_descriptor_set].as_ptr() as *const *mut vulkan::DescriptorSet, 0, std::ptr::null()) };
 
-    for (i, line) in lines.iter().enumerate() {
-        for (j, c) in line.iter().enumerate() {
-            let char_index = *c as usize - 32;
-            unsafe { (device.vkCmdBindVertexBuffers)(command_buffer, 0, 1, &vertex_buffer as *const *mut vulkan::Buffer, [(std::mem::size_of::<[f32; 2]>() * char_index) as u64 * 4].as_ptr()) };
-            unsafe { (device.vkCmdPushConstants)(command_buffer, graphics_pipeline.layout, vulkan::SHADER_STAGE_VERTEX_BIT, 0, std::mem::size_of::<f32>() as u32 * 2, std::mem::transmute::<*const f32, *const std::ffi::c_void>([j as f32 * h_space + 1.0, i as f32 * h_space + 1.0].as_ptr())) };
-            unsafe { (device.vkCmdDrawIndexed)(command_buffer, 6, 1, 0, 0, 0) };
-        }
-    }
+    // for (i, line) in lines.iter().enumerate() {
+    //     for (j, c) in line.iter().enumerate() {
+    //         let char_index = *c as usize - 32;
+    //         unsafe { (device.vkCmdBindVertexBuffers)(command_buffer, 0, 1, &vertex_buffer as *const *mut vulkan::Buffer, [(std::mem::size_of::<[f32; 2]>() * char_index) as u64 * 4].as_ptr()) };
+    //         unsafe { (device.vkCmdPushConstants)(command_buffer, graphics_pipeline.layout, vulkan::SHADER_STAGE_VERTEX_BIT, 0, std::mem::size_of::<f32>() as u32 * 2, std::mem::transmute::<*const f32, *const std::ffi::c_void>([j as f32 * 2.0 + 1.0, i as f32 * 2.0 + 1.0].as_ptr())) };
+    //         unsafe { (device.vkCmdDrawIndexed)(command_buffer, 6, 1, 0, 0, 0) };
+    //     }
+    // }
+
+    unsafe { (device.vkCmdBindVertexBuffers)(command_buffer, 0, 1, &vertex_buffer as *const *mut vulkan::Buffer, [0].as_ptr()) };
+    unsafe { (device.vkCmdPushConstants)(command_buffer, graphics_pipeline.layout, vulkan::SHADER_STAGE_VERTEX_BIT, 0, std::mem::size_of::<f32>() as u32 * 2, std::mem::transmute::<*const f32, *const std::ffi::c_void>([1.0, 1.0].as_ptr())) };
+    unsafe { (device.vkCmdDrawIndexed)(command_buffer, 6, 1, 0, 0, 0) };
 
     unsafe { (device.vkCmdEndRenderPass)(command_buffer) };
     unsafe { (device.vkEndCommandBuffer)(command_buffer) };
@@ -2022,7 +2056,6 @@ pub fn draw_frame(
             &swapchain.extent,
             graphics_pipeline,
             lines,
-            swapchain.h_space,
         );
         swapchain.ready_command_buffers[image_index as usize] = true;
     }
@@ -2082,22 +2115,20 @@ pub fn shutdown_swapchain(device: &Device, swapchain: &Swapchain) {
 
         (device.vkFreeMemory)(device.handle, swapchain.vertex_buffer.memory, null);
         (device.vkFreeMemory)(device.handle, swapchain.index_buffer.memory, null);
-        (device.vkFreeMemory)(device.handle, swapchain.texture_image_memory, null);
-        (device.vkFreeMemory)(device.handle, swapchain.depth_image_memory, null);
+        (device.vkFreeMemory)(device.handle, swapchain.texture_image.memory, null);
+        (device.vkFreeMemory)(device.handle, swapchain.depth_image.memory, null);
         (device.vkFreeMemory)(device.handle, swapchain.global_uniform_buffer.memory, null);
-        // (device.vkFreeMemory)(device.handle, swapchain.instance_uniform_buffer.memory, null);
         (device.vkDestroyBuffer)(device.handle, swapchain.vertex_buffer.handle, null);
         (device.vkDestroyBuffer)(device.handle, swapchain.index_buffer.handle, null);
         (device.vkDestroyBuffer)(device.handle, swapchain.global_uniform_buffer.handle, null);
-        // (device.vkDestroyBuffer)(device.handle, swapchain.instance_uniform_buffer.handle, null);
         (device.vkDestroySemaphore)(device.handle, swapchain.render_finished, null);
         (device.vkDestroySemaphore)(device.handle, swapchain.image_available, null);
         (device.vkDestroyFence)(device.handle, swapchain.in_flight, null);
         (device.vkDestroyCommandPool)(device.handle, swapchain.command_pool, null);
-        (device.vkDestroyImageView)(device.handle, swapchain.depth_image_view, null);
-        (device.vkDestroyImageView)(device.handle, swapchain.texture_image_view, null);
-        (device.vkDestroyImage)(device.handle, swapchain.depth_image, null);
-        (device.vkDestroyImage)(device.handle, swapchain.texture_image, null);
+        (device.vkDestroyImageView)(device.handle, swapchain.depth_image.view, null);
+        (device.vkDestroyImageView)(device.handle, swapchain.texture_image.view, null);
+        (device.vkDestroyImage)(device.handle, swapchain.depth_image.handle, null);
+        (device.vkDestroyImage)(device.handle, swapchain.texture_image.handle, null);
         (device.vkDestroySampler)(device.handle, swapchain.texture_sampler, null);
         (device.vkDestroySwapchainKHR)(device.handle, swapchain.handle, null);
     };
