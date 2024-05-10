@@ -39,6 +39,9 @@ pub struct Core<'a> {
     pub chars_positions: Vec<Vec<[u8; 2]>>,
     pub content_changed: bool,
 
+    shift_modifier: bool,
+    control_modifier: bool,
+
     chars_per_row: usize,
     content: Vec<Line>,
     cursor_position: [usize; 2],
@@ -78,6 +81,7 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
     let code = id as u8;
 
     if state == 1 {
+        // println!("{}", id);
         if code == ENTER {
             core.cursor_position[1] += 1;
 
@@ -124,8 +128,18 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
                 core.cursor_position[0] -= 1;
                 core.content_changed = true;
             }
+        } else if code == SHIFT {
+            core.shift_modifier = true;
+        } else if code == CONTROL {
+            core.control_modifier = true;
         } else if let Ok(b) = try_ascci(code) {
-            core.content[core.cursor_position[1]].content.insert(core.cursor_position[0], b);
+            let c = if core.shift_modifier {
+                b[1]
+            } else {
+                b[0]
+            };
+
+            core.content[core.cursor_position[1]].content.insert(core.cursor_position[0], c);
             core.lines_with_offset[core.cursor_position[1] - core.cursor_position_offset[1]] = core.content[core.cursor_position[1]].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + core.chars_per_row);
             core.cursor_position[0] += 1;
 
@@ -137,6 +151,12 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
         } else if (core.keys_count as usize) < core.keys_pressed.len() {
             core.keys_pressed[core.keys_count as usize] = code;
             core.keys_count += 1;
+        }
+    } else if state == 0 {
+        if code == SHIFT {
+            core.shift_modifier = false;
+        } else if code == CONTROL {
+            core.control_modifier = false;
         }
     }
 }
@@ -278,7 +298,8 @@ pub fn init(
         lines_with_offset: vec![&[]; chars_per_coloum],
         cursor_position: [0, 0],
         cursor_position_offset: [0, 0],
-
+        shift_modifier: false,
+        control_modifier: false,
         registry_listener: wayland::wl_registry_listener {
             global: Some(global_listener),
             global_remove: Some(remove_listener),
@@ -370,47 +391,67 @@ pub fn shutdown(core: &Core) {
 }
 
 const ENTER: u8 = 28;
+const SHIFT: u8 = 42;
+const CONTROL: u8 = 58;
 const BACKSPACE: u8 = 14;
 
-fn try_ascci(u: u8) -> Result<u8, WaylandError> {
+fn try_ascci(u: u8) -> Result<[u8; 2], WaylandError> {
     match u {
-        2 => Ok(b'1'),
-        3 => Ok(b'2'),
-        4 => Ok(b'3'),
-        5 => Ok(b'4'),
-        6 => Ok(b'5'),
-        7 => Ok(b'6'),
-        8 => Ok(b'7'),
-        9 => Ok(b'8'),
-        10 => Ok(b'9'),
-        11 => Ok(b'0'),
+        2 => Ok([b'1', b'!']),
+        3 => Ok([b'2', b'@']),
+        4 => Ok([b'3', b'#']),
+        5 => Ok([b'4', b'$']),
+        6 => Ok([b'5', b'%']),
+        7 => Ok([b'6', b'^']),
+        8 => Ok([b'7', b'&']),
+        9 => Ok([b'8', b'*']),
+        10 => Ok([b'9', b'(']),
+        11 => Ok([b'0', b')']),
+        12 => Ok([b'-', b'_']),
+        13 => Ok([b'=', b'+']),
 
-        16 => Ok(b'q'),
-        17 => Ok(b'w'),
-        18 => Ok(b'e'),
-        19 => Ok(b'r'),
-        20 => Ok(b't'),
-        21 => Ok(b'y'),
-        22 => Ok(b'u'),
-        23 => Ok(b'i'),
-        24 => Ok(b'o'),
-        25 => Ok(b'p'),
-        30 => Ok(b'a'),
-        31 => Ok(b's'),
-        32 => Ok(b'd'),
-        33 => Ok(b'f'),
-        34 => Ok(b'g'),
-        35 => Ok(b'h'),
-        36 => Ok(b'j'),
-        37 => Ok(b'k'),
-        38 => Ok(b'l'),
-        44 => Ok(b'z'),
-        45 => Ok(b'x'),
-        46 => Ok(b'c'),
-        47 => Ok(b'v'),
-        48 => Ok(b'b'),
-        49 => Ok(b'n'),
-        50 => Ok(b'm'),
+        16 => Ok([b'q', b'Q']),
+        17 => Ok([b'w', b'W']),
+        18 => Ok([b'e', b'E']),
+        19 => Ok([b'r', b'R']),
+        20 => Ok([b't', b'T']),
+        21 => Ok([b'y', b'Y']),
+        22 => Ok([b'u', b'U']),
+        23 => Ok([b'i', b'I']),
+        24 => Ok([b'o', b'O']),
+        25 => Ok([b'p', b'P']),
+
+        26 => Ok([b'[', b'{']),
+        27 => Ok([b']', b'}']),
+
+        30 => Ok([b'a', b'A']),
+        31 => Ok([b's', b'S']),
+        32 => Ok([b'd', b'D']),
+        33 => Ok([b'f', b'F']),
+        34 => Ok([b'g', b'G']),
+        35 => Ok([b'h', b'H']),
+        36 => Ok([b'j', b'J']),
+        37 => Ok([b'k', b'K']),
+        38 => Ok([b'l', b'L']),
+
+        39 => Ok([b';', b':']),
+        40 => Ok([b'\'', b'"']),
+
+        43 => Ok([b'\\', b'|']),
+
+        44 => Ok([b'z', b'Z']),
+        45 => Ok([b'x', b'X']),
+        46 => Ok([b'c', b'C']),
+        47 => Ok([b'v', b'V']),
+        48 => Ok([b'b', b'B']),
+        49 => Ok([b'n', b'N']),
+        50 => Ok([b'm', b'M']),
+
+        51 => Ok([b',', b'<']),
+        52 => Ok([b'.', b'>']),
+        53 => Ok([b'/', b'?']),
+
+        57 => Ok([b' ', b' ']),
 
         _ => Err(WaylandError::NotAscci),
     }

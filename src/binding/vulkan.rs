@@ -543,7 +543,7 @@ pub struct FramebufferCreateInfo {
     pub flags: u32,
     pub renderPass: *mut RenderPass,
     pub attachmentCount: u32,
-    pub pAttachments: *const ImageView,
+    pub pAttachments: *const *mut ImageView,
     pub width: u32,
     pub height: u32,
     pub layers: u32,
