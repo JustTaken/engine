@@ -6,11 +6,10 @@ pub fn main() {
     let default_width = 1920;
     let default_height = 1080;
     let char_set = (32..127).collect::<Vec<u8>>();
-    // let char_set = [b';'];
 
     let font = font::init("assets/fonts/font.ttf", &char_set, 80).unwrap();
 
-    let mut window = wayland::init("Engine name", default_width, default_height, char_set.len(), font.scale).unwrap();
+    let mut window = wayland::init("Engine name", default_width, default_height, font.scale).unwrap();
     let instance = vulkan::instance(&window.extensions).unwrap();
     let surface = vulkan::surface(&instance, window.display, window.surface).unwrap();
     let device = vulkan::device(&instance, surface).unwrap();
@@ -26,24 +25,21 @@ pub fn main() {
     ).unwrap();
 
     while window.running {
-        if let Err(e) = vulkan::draw_frame(
+        if let Err(_) = vulkan::draw_frame(
             &device,
             &mut swapchain,
             &graphics_pipeline,
-            &window.lines_with_offset,
+            &mut window.unique_chars,
+            &window.cursor,
             window.width,
             window.height
         ) {
-            if let vulkan::DrawError::HasToRecreate = e {
-                vulkan::recreate_swapchain(&device, &mut swapchain, &graphics_pipeline, window.width, window.height).unwrap();
-            } else {
-                break;
-            }
+            break;
         }
 
-        if window.content_changed {
-            vulkan::invalidate_command_buffers(&mut swapchain);
-            window.content_changed = false;
+        if window.changed {
+            vulkan::set_change(&mut swapchain);
+            wayland::set_unchanged(&mut window);
         }
 
         wayland::update(&window);

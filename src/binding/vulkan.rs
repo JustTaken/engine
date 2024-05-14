@@ -45,6 +45,7 @@ pub const STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER: u32 = 45;
 pub const STRUCTURE_TYPE_SAMPLER_CREATE_INFO: u32 = 31;
 pub const STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO: u32 = 34;
 pub const STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET: u32 = 35;
+pub const STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO: u32 = 41;
 
 pub const QUEUE_FAMILY_IGNORED: u32 = 0;
 pub const IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL: u32 = 7;
@@ -77,7 +78,10 @@ pub const MEMORY_PROPERTY_DEVICE_LOCAL_BIT: u32 = 1;
 
 pub const COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: u32 = 2;
 pub const COMMAND_BUFFER_LEVEL_PRIMARY: u32 = 0;
+pub const COMMAND_BUFFER_LEVEL_SECONDARY: u32 = 1;
 pub const COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: u32 = 1;
+pub const COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT: u32 = 2;
+pub const SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS: u32 = 1;
 
 pub const FENCE_CREATE_SIGNALED_BIT: u32 = 1;
 pub const SUBPASS_CONTENTS_INLINE: u32 = 0;
@@ -1952,3 +1956,9 @@ pub type vkCmdPushConstants = unsafe extern "C" fn(
     pValues: *const ::std::os::raw::c_void,
 );
 pub type PFN_vkCmdPushConstants = ::std::option::Option<vkCmdPushConstants>;
+pub type vkCmdExecuteCommands = unsafe extern "C" fn(
+    commandBuffer: *mut CommandBuffer,
+    commandBufferCount: u32,
+    pCommandBuffers: *const *mut CommandBuffer,
+);
+pub type PFN_vkCmdExecuteCommands = ::std::option::Option<vkCmdExecuteCommands>;

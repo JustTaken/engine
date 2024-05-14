@@ -1,52 +1,26 @@
 use crate::binding::wayland;
 
-struct Line {
-    content: Vec<u8>,
-}
-
-impl Line {
-    fn get_slice(&self, offset: usize, size: usize) -> &[u8] {
-        if self.content.len() < offset {
-            &[]
-        } else if self.content.len() < size {
-            &self.content[offset..self.content.len()]
-        } else {
-            &self.content[offset..size]
-        }
-    }
-
-    fn get_this_pos_or_max(&self, pos: usize) -> usize {
-        if self.content.len() < pos {
-            self.content.len()
-        } else {
-            pos
-        }
-    }
-}
-
-pub struct Core<'a> {
+pub struct Core {
     pub display: *mut wayland::wl_display,
     pub surface: *mut wayland::wl_surface,
 
-    pub extensions: [*const std::ffi::c_char; 2],
+    pub extensions: [*const i8; 2],
     pub running: bool,
     pub width: u32,
     pub height: u32,
-    pub keys_pressed: [u8; 4],
-    pub keys_count: u8,
 
-    pub lines_with_offset: Vec<&'a [u8]>,
-    pub chars_positions: Vec<Vec<[u8; 2]>>,
-    pub content_changed: bool,
+    pub unique_chars: UniqueChars,
+    pub cursor: Cursor,
+    pub changed: bool,
+
+    scale: f32,
+    chars_per_row: usize,
+    chars_per_coloum: usize,
 
     shift_modifier: bool,
     control_modifier: bool,
 
-    chars_per_row: usize,
-    content: Vec<Line>,
-    cursor_position: [usize; 2],
-    cursor_position_offset: [usize; 2],
-    scale: f32,
+    lines: Vec<Vec<u8>>,
 
     registry: *mut wayland::wl_registry,
     compositor: *mut wayland::wl_compositor,
@@ -70,6 +44,269 @@ pub enum WaylandError {
     NotAscci,
 }
 
+pub struct Cursor {
+    pub xpos: u8,
+    pub ypos: u8,
+    x_offset: u8,
+    y_offset: u8,
+}
+
+pub struct UniqueChars {
+    pub changed: bool,
+    pub offset: [u8; 95],
+    pub positions: Vec<Vec<[u8; 2]>>,
+}
+
+fn get_slice(line: &[u8], offset: u8, size: u8) -> &[u8] {
+    let len = line.len();
+
+    if len < offset as usize {
+        &[]
+    } else if len < size as usize {
+        &line[offset as usize..len]
+    } else {
+        &line[offset as usize..size as usize]
+    }
+}
+
+fn get_this_line_or_max(lines: &Vec<Vec<u8>>, i: usize) -> usize {
+    let len = lines.len();
+
+    if len < i {
+        len
+    } else {
+        i
+    }
+}
+
+fn remove_char(chars: &mut UniqueChars, c: u8, position: [u8; 2]) {
+    let c = c as usize - 32;
+    let offset = chars.offset[c] as usize;
+
+    for i in 0..chars.positions[offset].len() {
+        if chars.positions[offset][i][0] == position[0] && chars.positions[offset][i][1] == position[1] {
+            chars.positions[offset].remove(i);
+            break;
+        }
+    }
+
+    chars.changed = true;
+}
+
+fn insert_char(chars: &mut UniqueChars, c: u8, position: [u8; 2]) {
+    let c = c as usize - 32;
+
+    if chars.offset[c] == 255 {
+        chars.offset[c] = chars.positions.len() as u8;
+        chars.positions.push(Vec::with_capacity(50));
+    }
+
+    chars.positions[chars.offset[c] as usize].push(position);
+
+    chars.changed = true;
+}
+
+fn update_chars(core: &mut Core) {
+    let max_line = get_this_line_or_max(&core.lines, core.cursor.y_offset as usize + core.chars_per_coloum);
+    let lines = &core.lines[core.cursor.y_offset as usize..max_line];
+
+    for i in 0..core.unique_chars.positions.len() {
+        core.unique_chars.positions[i].clear();
+    }
+
+    for (i, line) in lines.iter().enumerate() {
+        for (j, u) in get_slice(line, core.cursor.x_offset, core.chars_per_row as u8 + core.cursor.x_offset).iter().enumerate() {
+            let c = *u as usize - 32;
+
+            if core.unique_chars.offset[c] == 255 {
+                core.unique_chars.offset[c] = core.unique_chars.positions.len() as u8;
+                core.unique_chars.positions.push(Vec::with_capacity(50));
+            }
+
+            core.unique_chars.positions[core.unique_chars.offset[c] as usize].push([j as u8, i as u8]);
+        }
+    }
+
+    core.unique_chars.changed = true;
+}
+
+fn delete_prev_char(core: &mut Core) {
+    if core.cursor.xpos + core.cursor.x_offset == 0 {
+        if core.cursor.ypos > 0 {
+            core.cursor.ypos -= 1;
+        } else if core.cursor.y_offset > 0 {
+            core.cursor.y_offset -= 1;
+        } else {
+            return;
+        }
+
+        let len = core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].len();
+
+        core.cursor.xpos = (len % core.chars_per_row) as u8;
+        core.cursor.x_offset = len as u8 - core.cursor.xpos;
+        update_chars(core);
+    } else if core.cursor.xpos == 0 {
+        core.cursor.x_offset -= 1;
+
+        core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].remove(core.cursor.x_offset as usize);
+    } else {
+        core.cursor.xpos -= 1;
+
+        let c = core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].remove((core.cursor.xpos + core.cursor.x_offset) as usize);
+        remove_char(&mut core.unique_chars, c, [core.cursor.xpos, core.cursor.ypos]);
+    }
+
+    core.changed = true;
+}
+
+fn next_char(core: &mut Core) {
+    let line = core.cursor.ypos + core.cursor.y_offset;
+    let xpos = core.cursor.xpos + core.cursor.x_offset;
+
+    if xpos as usize >= core.lines[line as usize].len() {
+        if core.lines.len() <= line as usize + 1 {
+            return;
+        }
+
+        if core.cursor.ypos as usize + 1 >= core.chars_per_coloum {
+            core.cursor.y_offset += 1;
+            core.cursor.xpos = 0;
+            core.cursor.x_offset = 0;
+        } else {
+            core.cursor.xpos = 0;
+            core.cursor.x_offset = 0;
+            core.cursor.ypos += 1;
+        }
+    } else if core.cursor.xpos < core.chars_per_row as u8 {
+        core.cursor.xpos += 1;
+    } else {
+        core.cursor.x_offset += 1;
+    }
+
+    core.changed = true;
+    update_chars(core);
+}
+
+fn prev_char(core: &mut Core) {
+    if core.cursor.xpos + core.cursor.x_offset == 0 {
+        if core.cursor.ypos > 0 {
+            core.cursor.ypos -= 1;
+        } else if core.cursor.y_offset > 0 {
+            core.cursor.y_offset -= 1;
+        } else {
+            return;
+        }
+
+        let len = core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].len();
+
+        core.cursor.xpos = (len % core.chars_per_row) as u8;
+        core.cursor.x_offset = len as u8 - core.cursor.xpos;
+
+    } else if core.cursor.xpos == 0 {
+        core.cursor.x_offset -= 1;
+    } else {
+        core.cursor.xpos -= 1;
+    }
+
+    core.changed = true;
+    update_chars(core);
+}
+
+fn prev_line(core: &mut Core) {
+    if core.cursor.ypos + core.cursor.y_offset > 0 {
+        if core.cursor.ypos == 0 {
+            core.cursor.y_offset -= 1;
+        } else {
+            core.cursor.ypos -= 1;
+        }
+
+        let xpos = core.cursor.xpos + core.cursor.x_offset;
+        let ypos = core.cursor.ypos + core.cursor.y_offset;
+        let xpos = this_pos_or_max(&core.lines[ypos as usize], xpos as usize);
+
+        core.cursor.xpos = (xpos % core.chars_per_row) as u8;
+        core.cursor.x_offset = (xpos - core.cursor.xpos as usize) as u8;
+
+        core.changed = true;
+        update_chars(core);
+    }
+}
+
+fn this_pos_or_max(line: &[u8], x: usize) -> usize {
+    let len = line.len();
+
+    if len < x {
+        len
+    } else {
+        x
+    }
+}
+
+fn next_line(core: &mut Core) {
+    let ypos = (core.cursor.ypos + core.cursor.y_offset + 1) as usize;
+    if ypos < core.lines.len() {
+        if core.cursor.ypos + 1 >= core.chars_per_coloum as u8 {
+            core.cursor.y_offset += 1;
+        } else {
+            core.cursor.ypos += 1;
+        }
+
+        let xpos = core.cursor.xpos + core.cursor.x_offset;
+        let xpos = this_pos_or_max(&core.lines[ypos], xpos as usize);
+
+        core.cursor.xpos = (xpos % core.chars_per_row) as u8;
+        core.cursor.x_offset = (xpos - core.cursor.xpos as usize) as u8;
+
+        core.changed = true;
+        update_chars(core);
+    }
+}
+
+fn insert_new_line(core: &mut Core) {
+    if core.cursor.ypos + 1 >= core.chars_per_coloum as u8 {
+        core.cursor.y_offset += 1;
+    } else {
+        core.cursor.ypos += 1;
+    }
+
+
+    if core.lines.len() <= (core.cursor.ypos + core.cursor.y_offset) as usize {
+        core.lines.push(Vec::with_capacity(255));
+    }
+
+    core.cursor.xpos = 0;
+    core.cursor.x_offset = 0;
+
+    core.changed = true;
+    update_chars(core);
+}
+
+fn insert_char_at_current_position(core: &mut Core, c: u8) {
+    core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].insert((core.cursor.xpos + core.cursor.x_offset) as usize, c);
+
+    if core.cursor.xpos >= core.chars_per_row as u8 {
+        core.cursor.x_offset += 1;
+        update_chars(core);
+    } else {
+        insert_char(&mut core.unique_chars, c, [core.cursor.xpos, core.cursor.ypos]);
+        core.cursor.xpos += 1;
+    }
+
+    core.changed = true;
+}
+
+pub fn set_unchanged(core: &mut Core) {
+    core.changed = false;
+    core.unique_chars.changed = false;
+}
+
+pub fn update(core: &Core) {
+    unsafe {
+        wayland::wl_proxy_marshal_flags(core.surface as *mut wayland::wl_proxy, wayland::WL_SURFACE_COMMIT, std::ptr::null(), wayland::wl_proxy_get_version(core.surface as *mut wayland::wl_proxy), 0);
+        wayland::wl_display_roundtrip(core.display);
+    };
+}
+
 unsafe extern "C" fn keymap(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: i32, _: u32) {}
 unsafe extern "C" fn enter(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: *mut wayland::wl_surface, _: *mut wayland::wl_array) {}
 unsafe extern "C" fn leave(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: *mut wayland::wl_surface,) {}
@@ -81,77 +318,40 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
     let code = id as u8;
 
     if state == 1 {
-        // println!("{}", id);
-        if code == ENTER {
-            core.cursor_position[1] += 1;
+        // let start = std::time::Instant::now();
 
-            if core.content.len() <= core.cursor_position[1] {
-                core.content.push(
-                    Line {
-                        content: Vec::new()
-                    }
-                );
-
-                core.cursor_position[0] = 0;
-            } else {
-                core.cursor_position[0] = core.content[core.cursor_position[1]].get_this_pos_or_max(core.cursor_position[0]);
-            }
-
-            if core.cursor_position[0] < core.cursor_position_offset[0] {
-                core.cursor_position_offset[0] = core.cursor_position[0];
-                core.content_changed = true;
-            }
-
-            if core.cursor_position[1] >= core.cursor_position_offset[1] + core.lines_with_offset.len() {
-                core.lines_with_offset.rotate_left(1);
-                core.cursor_position_offset[1] += 1;
-                core.lines_with_offset[core.cursor_position[1] - core.cursor_position_offset[1]] = core.content[core.cursor_position[1]].get_slice(core.cursor_position[0], core.cursor_position[0] + core.chars_per_row);
-                core.content_changed = true;
-            } else if core.cursor_position[1] < core.cursor_position_offset[1] {
-                core.cursor_position_offset[1] = core.cursor_position[1];
-                core.content_changed = true;
-            }
-        } else if code == BACKSPACE {
-            if core.cursor_position[0] == 0 {
-                if core.cursor_position[1] > 0 {
-                    core.cursor_position[1] -= 1;
-                    core.cursor_position[0] = core.content[core.cursor_position[1]].content.len();
-
-                    if core.cursor_position[0] >= core.chars_per_row + core.cursor_position_offset[0] {
-                        core.cursor_position_offset[0] = core.cursor_position[0] - core.chars_per_row + 1;
-                        core.content_changed = true;
-                    }
-                }
-            } else {
-                core.content[core.cursor_position[1]].content.remove(core.cursor_position[0] - 1);
-                core.lines_with_offset[core.cursor_position[1] - core.cursor_position_offset[1]] = core.content[core.cursor_position[1]].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + core.chars_per_row);
-                core.cursor_position[0] -= 1;
-                core.content_changed = true;
-            }
-        } else if code == SHIFT {
-            core.shift_modifier = true;
-        } else if code == CONTROL {
-            core.control_modifier = true;
-        } else if let Ok(b) = try_ascci(code) {
+        if let Ok(b) = try_ascci(code) {
             let c = if core.shift_modifier {
                 b[1]
             } else {
                 b[0]
             };
 
-            core.content[core.cursor_position[1]].content.insert(core.cursor_position[0], c);
-            core.lines_with_offset[core.cursor_position[1] - core.cursor_position_offset[1]] = core.content[core.cursor_position[1]].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + core.chars_per_row);
-            core.cursor_position[0] += 1;
-
-            if core.cursor_position[0] >= core.chars_per_row + core.cursor_position_offset[0] {
-                core.cursor_position_offset[0] = core.cursor_position[0] - core.chars_per_row + 1;
+            if core.control_modifier {
+                if c == b'p' {
+                    prev_line(core);
+                } else if c == b'n' {
+                    next_line(core);
+                } else if c == b'b' {
+                    prev_char(core);
+                } else if c == b'f' {
+                    next_char(core);
+                }
+            } else {
+                insert_char_at_current_position(core, c);
             }
-
-            core.content_changed = true;
-        } else if (core.keys_count as usize) < core.keys_pressed.len() {
-            core.keys_pressed[core.keys_count as usize] = code;
-            core.keys_count += 1;
+        } else if code == ENTER {
+            insert_new_line(core);
+        } else if code == BACKSPACE {
+            delete_prev_char(core);
+        } else if code == SHIFT {
+            core.shift_modifier = true;
+        } else if code == CONTROL {
+            core.control_modifier = true;
         }
+
+        // let elapsed_time = start.elapsed();
+        // println!("buffer modification run in {} ns", elapsed_time.as_nanos());
     } else if state == 0 {
         if code == SHIFT {
             core.shift_modifier = false;
@@ -190,24 +390,25 @@ unsafe extern "C" fn toplevel_configure(data: *mut std::ffi::c_void, _: *mut way
     if width > 0 && height > 0 {
         core.width = width as u32;
         core.height = height as u32;
+        core.changed = true;
 
-        let chars_per_coloum = (2.0 / core.scale) as usize;
-        let chars_per_row = (2.0 / core.scale * core.width as f32 / core.height as f32) as usize + 1;
+        core.chars_per_coloum = (2.0 / core.scale) as usize;
+        core.chars_per_row = (2.0 / core.scale * core.width as f32 / core.height as f32) as usize - 1;
 
-        if chars_per_row != core.chars_per_row {
-            core.chars_per_row = chars_per_row;
-            for i in core.cursor_position_offset[1]..core.content.len() {
-                core.lines_with_offset[i - core.cursor_position_offset[1]] = core.content[i].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + chars_per_row);
-            }
-        }
+        // if chars_per_row != core.chars_per_row {
+        //     core.chars_per_row = chars_per_row;
+        //     for i in core.cursor_position_offset[1]..core.content.len() {
+        //         core.lines_with_offset[i - core.cursor_position_offset[1]] = core.content[i].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + chars_per_row);
+        //     }
+        // }
 
-        if chars_per_coloum > core.lines_with_offset.len() {
-            for i in chars_per_coloum..core.lines_with_offset.len() {
-                core.lines_with_offset[i] = core.content[core.cursor_position_offset[1] + i].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + chars_per_row);
-            }
-        } else {
-            core.lines_with_offset.resize(chars_per_coloum, &[]);
-        }
+        // if chars_per_coloum > core.lines_with_offset.len() {
+        //     for i in chars_per_coloum..core.lines_with_offset.len() {
+        //         core.lines_with_offset[i] = core.content[core.cursor_position_offset[1] + i].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + chars_per_row);
+        //     }
+        // } else {
+        //     core.lines_with_offset.resize(chars_per_coloum, &[]);
+        // }
     }
 }
 
@@ -262,10 +463,10 @@ pub fn init(
     name: &str,
     width: u32,
     height: u32,
-    chars_len: usize,
     scale: f32,
 ) -> Result<Box<Core>, WaylandError> {
     let chars_per_coloum = (2.0 / scale) as usize;
+    let chars_per_row = (2.0 / scale * width as f32 / height as f32) as usize;
 
     let mut core = Box::new(Core {
         display: std::ptr::null_mut(),
@@ -281,23 +482,25 @@ pub fn init(
             std::ffi::CString::new("VK_KHR_surface").unwrap().into_raw(),
             std::ffi::CString::new("VK_KHR_wayland_surface").unwrap().into_raw(),
         ],
-        chars_positions: (0..chars_len).map(|_| Vec::new()).collect::<Vec<Vec<[u8; 2]>>>(),
         width,
         height,
         scale,
         running: true,
-        keys_pressed: [0; 4],
-        keys_count: 0,
-        content_changed: false,
-        chars_per_row: (2.0 / scale * width as f32 / height as f32) as usize + 1,
-        content: vec![
-            Line {
-                content: Vec::new(),
-            },
-        ],
-        lines_with_offset: vec![&[]; chars_per_coloum],
-        cursor_position: [0, 0],
-        cursor_position_offset: [0, 0],
+        changed: false,
+        chars_per_row,
+        lines: vec![Vec::with_capacity(50)],
+        chars_per_coloum,
+        unique_chars: UniqueChars {
+            changed: true,
+            offset: [255; 95],
+            positions: Vec::with_capacity(95),
+        },
+        cursor: Cursor {
+            xpos: 0,
+            ypos: 0,
+            x_offset: 0,
+            y_offset: 0,
+        },
         shift_modifier: false,
         control_modifier: false,
         registry_listener: wayland::wl_registry_listener {
@@ -368,13 +571,6 @@ pub fn init(
     unsafe { wayland::wl_display_roundtrip(core.display) };
 
     Ok(core)
-}
-
-pub fn update(core: &Core) {
-    unsafe {
-        wayland::wl_proxy_marshal_flags(core.surface as *mut wayland::wl_proxy, wayland::WL_SURFACE_COMMIT, std::ptr::null(), wayland::wl_proxy_get_version(core.surface as *mut wayland::wl_proxy), 0);
-        wayland::wl_display_roundtrip(core.display);
-    };
 }
 
 pub fn shutdown(core: &Core) {

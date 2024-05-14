@@ -70,10 +70,12 @@ fn new_header(reader: &mut BufReader<std::fs::File>) -> Result<Header, ParseErro
     reader.seek(std::io::SeekFrom::Current(2)).map_err(|_| ParseError::WrongSize)?;
     let units_pem = read(reader, 2)? as u16;
     reader.seek(std::io::SeekFrom::Current(16)).map_err(|_| ParseError::WrongSize)?;
+
     let x_min = read(reader, 2).unwrap() as i16;
     let y_min = read(reader, 2).unwrap() as i16;
     let x_max = read(reader, 2).unwrap() as i16;
     let y_max = read(reader, 2).unwrap() as i16;
+
     reader.seek(std::io::SeekFrom::Current(6)).map_err(|_| ParseError::WrongSize)?;
 
     let index_to_loc_format = read(reader, 2)? as u16;
@@ -210,7 +212,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
     let mut cmap: Option<Map> = None;
     let mut header: Option<Header> = None;
 
-    let mut location_offset: u32 = 0;
+    let mut location_table_offset: u32 = 0;
     let mut glyph_table_offset: u32 = 0;
     let mut horizontal_metrics_table_offset: u32 = 0;
     let mut num_of_long_h_metrics: u32 = 0;
@@ -252,7 +254,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
                 reader.seek(std::io::SeekFrom::Start(table.offset as u64)).unwrap();
                 header = new_header(&mut reader).ok();
             } else if let TableType::Location = typ {
-                location_offset = table.offset;
+                location_table_offset = table.offset;
             } else if let TableType::Glyph = typ {
                 glyph_table_offset = table.offset;
             } else if let TableType::HorizontalHeader = typ {
@@ -293,7 +295,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
             let glyph = new_glyph(
                 &mut reader,
                 index_to_loc,
-                location_offset,
+                location_table_offset,
                 glyph_table_offset,
                 horizontal_metrics_table_offset,
                 num_of_long_h_metrics,
@@ -364,9 +366,9 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
     }
 }
 
-fn goto_glyph_offset(reader: &mut BufReader<std::fs::File>, index_to_loc: u32, location_offset: u32, code_point: u32, glyph_table_offset: u32) {
+fn goto_glyph_offset(reader: &mut BufReader<std::fs::File>, index_to_loc: u32, location_table_offset: u32, code_point: u32, glyph_table_offset: u32) {
     let translate = index_to_loc * 2;
-    reader.seek(std::io::SeekFrom::Start((location_offset + code_point * (translate + 2)) as u64)).unwrap();
+    reader.seek(std::io::SeekFrom::Start((location_table_offset + code_point * (translate + 2)) as u64)).unwrap();
     let offset = read(reader, 2 + translate as usize).unwrap() * (((index_to_loc + 1) % 2) + 1);
     reader.seek(std::io::SeekFrom::Start((offset + glyph_table_offset) as u64)).unwrap();
 }
@@ -374,7 +376,7 @@ fn goto_glyph_offset(reader: &mut BufReader<std::fs::File>, index_to_loc: u32, l
 fn new_glyph(
     reader: &mut BufReader<std::fs::File>,
     index_to_loc: u32,
-    location_offset: u32,
+    location_table_offset: u32,
     glyph_table_offset: u32,
     hhea_table_offset: u32,
     long_h_metrics_count: u32,
@@ -394,7 +396,7 @@ fn new_glyph(
         ((advance * scale) as usize, (left_bearing * scale) as usize)
     };
 
-    goto_glyph_offset(reader, index_to_loc, location_offset, code_point, glyph_table_offset);
+    goto_glyph_offset(reader, index_to_loc, location_table_offset, code_point, glyph_table_offset);
     let number_of_contours = read(reader, 2).unwrap() as i16;
 
     let boundary = Box {
@@ -422,7 +424,7 @@ fn new_glyph(
             let matrix = read_compound_glyph(reader, flag);
             let pos = reader.stream_position().unwrap();
 
-            goto_glyph_offset(reader, index_to_loc, location_offset, index, glyph_table_offset);
+            goto_glyph_offset(reader, index_to_loc, location_table_offset, index, glyph_table_offset);
             let number_of_contours = read(reader, 2).unwrap() as i16;
             reader.seek(std::io::SeekFrom::Current(8)).unwrap();
 
@@ -556,9 +558,6 @@ fn read_simple_glyph(
         points[i].y = ((y_value - boundary.y_min) as f32 * factor_matrix[3] + points[i].x as f32 * factor_matrix[1]) as i16 + center_offset[1];
         points[i].x = ((points[i].x - boundary.x_min) as f32 * factor_matrix[0] + points[i].y as f32 * factor_matrix[2]) as i16 + center_offset[0];
     }
-
-    // let width = ((boundary.x_max - boundary.x_min) as f32 * factor_matrix[0]) as usize + 1;
-    // let height = ((boundary.y_max - boundary.y_min) as f32 * factor_matrix[3]) as usize + 1;
 
     Ok(Glyph {
         contour_ends,
