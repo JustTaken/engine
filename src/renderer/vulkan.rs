@@ -173,7 +173,6 @@ pub struct GraphicsPipeline {
     texture_descriptor_set_layout: *mut vulkan::DescriptorSetLayout,
 
     surface_format: vulkan::SurfaceFormatKHR,
-    depth_format: u32,
 }
 
 struct CommandBuffer {
@@ -188,7 +187,6 @@ pub struct Swapchain {
     command_buffers: Vec<CommandBuffer>,
     handle: *mut vulkan::SwapchainKHR,
     image_views: Vec<*mut vulkan::ImageView>,
-    depth_image: Image,
 
     texture_image: Image,
     texture_sampler: *mut vulkan::Sampler,
@@ -743,8 +741,8 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
         maxDepthBounds: 1.0,
         minDepthBounds: 0.0,
         depthCompareOp: vulkan::COMPARE_OP_LESS,
-        depthTestEnable: vulkan::TRUE,
-        depthWriteEnable: vulkan::TRUE,
+        depthTestEnable: vulkan::FALSE,
+        depthWriteEnable: vulkan::FALSE,
         stencilTestEnable: vulkan::FALSE,
         depthBoundsTestEnable: vulkan::FALSE,
     };
@@ -865,26 +863,7 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
         }
     }
 
-    let mut depth_format: u32 = 0;
-    let depth_formats = [
-        vulkan::D32_SFLOAT,
-        vulkan::D32_SFLOAT_S8_UINT,
-        vulkan::D24_UNORM_S8_UINT,
-    ];
-
-    let flag = vulkan::FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    for format in depth_formats {
-        let mut format_properties = std::mem::MaybeUninit::<vulkan::FormatProperties>::uninit();
-        unsafe { (instance.vkGetPhysicalDeviceFormatProperties)(device.physical_device, format, format_properties.as_mut_ptr()) };
-        let format_properties = unsafe { format_properties.assume_init() };
-
-        if format_properties.linearTilingFeatures & flag == flag  || format_properties.optimalTilingFeatures & flag == flag {
-            depth_format = format;
-            break;
-        }
-    }
-
-    let render_pass_attachments: [vulkan::AttachmentDescription; 2] = [
+    let render_pass_attachments: [vulkan::AttachmentDescription; 1] = [
         vulkan::AttachmentDescription {
             format: surface_format.format,
             flags: 0,
@@ -896,23 +875,7 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
             stencilLoadOp: vulkan::ATTACHMENT_LOAD_OP_DONT_CARE,
             stencilStoreOp: vulkan::ATTACHMENT_STORE_OP_DONT_CARE,
         },
-        vulkan::AttachmentDescription {
-            format: depth_format,
-            flags: 0,
-            samples: vulkan::SAMPLE_COUNT_1_BIT,
-            loadOp: vulkan::ATTACHMENT_LOAD_OP_CLEAR,
-            storeOp: vulkan::ATTACHMENT_STORE_OP_DONT_CARE,
-            finalLayout: vulkan::IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            initialLayout: vulkan::IMAGE_LAYOUT_UNDEFINED,
-            stencilLoadOp: vulkan::ATTACHMENT_STORE_OP_DONT_CARE,
-            stencilStoreOp: vulkan::ATTACHMENT_STORE_OP_DONT_CARE,
-        },
     ];
-
-    let stencil_attachment = vulkan::AttachmentReference {
-        attachment: 1,
-        layout: vulkan::IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-    };
 
     let color_attachment = vulkan::AttachmentReference {
         attachment: 0,
@@ -923,7 +886,7 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
         pipelineBindPoint: vulkan::PIPELINE_BIND_POINT_GRAPHICS,
         colorAttachmentCount: 1,
         pColorAttachments: &color_attachment as *const vulkan::AttachmentReference,
-        pDepthStencilAttachment: &stencil_attachment as *const vulkan::AttachmentReference,
+        pDepthStencilAttachment: std::ptr::null(),//&stencil_attachment as *const vulkan::AttachmentReference,
         flags: 0,
         inputAttachmentCount: 0,
         pInputAttachments: std::ptr::null(),
@@ -994,7 +957,6 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
         render_pass,
         layout,
         surface_format,
-        depth_format,
         global_descriptor_pool,
         global_descriptor_set_layout,
         texture_descriptor_pool,
@@ -1409,22 +1371,13 @@ pub fn swapchain(
         );
     }
 
-    let depth_image = create_image(
-        device,
-        graphics_pipeline.depth_format,
-        vulkan::IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-        vulkan::IMAGE_ASPECT_DEPTH_BIT,
-        extent.width,
-        extent.height
-    )?;
-
     let mut framebuffers: Vec<*mut vulkan::Framebuffer> = Vec::with_capacity(count as usize);
     for i in 0..count {
         framebuffers.push(
             create_framebuffer(
                 device,
                 graphics_pipeline.render_pass,
-                &[image_views[i as usize], depth_image.view],
+                &[image_views[i as usize]],
                 extent.width,
                 extent.height
             )
@@ -1680,7 +1633,6 @@ pub fn swapchain(
         handle,
         image_views,
         framebuffers,
-        depth_image,
         extent,
 
         texture_image,
@@ -1772,9 +1724,6 @@ pub fn recreate_swapchain(device: &Device, swapchain: &mut Swapchain, graphics_p
             (device.vkDestroyFramebuffer)(device.handle, *framebuffer, null);
         }
 
-        (device.vkDestroyImageView)(device.handle, swapchain.depth_image.view, null);
-        (device.vkFreeMemory)(device.handle, swapchain.depth_image.memory, null);
-        (device.vkDestroyImage)(device.handle, swapchain.depth_image.handle, null);
         (device.vkDestroySwapchainKHR)(device.handle, swapchain.handle, null);
     };
 
@@ -1839,20 +1788,11 @@ pub fn recreate_swapchain(device: &Device, swapchain: &mut Swapchain, graphics_p
         swapchain.image_views[i as usize] = create_image_view(device, images[i as usize], graphics_pipeline.surface_format.format, vulkan::IMAGE_ASPECT_COLOR_BIT);
     }
 
-    swapchain.depth_image = create_image(
-        device,
-        graphics_pipeline.depth_format,
-        vulkan::IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-        vulkan::IMAGE_ASPECT_DEPTH_BIT,
-        swapchain.extent.width,
-        swapchain.extent.height
-    )?;
-
     for i in 0..count {
         swapchain.framebuffers[i as usize] = create_framebuffer(
             device,
             graphics_pipeline.render_pass,
-            &[swapchain.image_views[i as usize], swapchain.depth_image.view],
+            &[swapchain.image_views[i as usize]],
             swapchain.extent.width,
             swapchain.extent.height
         );
@@ -1951,12 +1891,6 @@ fn record_command_buffer(
                 float32: [0.0, 0.0, 0.0, 1.0],
             },
         },
-        vulkan::ClearValue {
-            depthStencil: vulkan::ClearDepthStencilValue {
-                depth: 1.0,
-                stencil: 0,
-            },
-        }
     ];
 
     let render_pass_info = vulkan::RenderPassBeginInfo {
@@ -2171,7 +2105,6 @@ pub fn shutdown_swapchain(device: &Device, swapchain: &Swapchain) {
         (device.vkFreeMemory)(device.handle, swapchain.index_buffer.memory, null);
         (device.vkFreeMemory)(device.handle, swapchain.texture_image.memory, null);
         (device.vkFreeMemory)(device.handle, swapchain.cursor_texture_image.memory, null);
-        (device.vkFreeMemory)(device.handle, swapchain.depth_image.memory, null);
         (device.vkFreeMemory)(device.handle, swapchain.global_uniform_buffer.memory, null);
         (device.vkDestroyBuffer)(device.handle, swapchain.vertex_buffer.handle, null);
         (device.vkDestroyBuffer)(device.handle, swapchain.cursor_vertex_buffer.handle, null);
@@ -2181,10 +2114,8 @@ pub fn shutdown_swapchain(device: &Device, swapchain: &Swapchain) {
         (device.vkDestroySemaphore)(device.handle, swapchain.image_available, null);
         (device.vkDestroyFence)(device.handle, swapchain.in_flight, null);
         (device.vkDestroyCommandPool)(device.handle, swapchain.command_pool, null);
-        (device.vkDestroyImageView)(device.handle, swapchain.depth_image.view, null);
         (device.vkDestroyImageView)(device.handle, swapchain.texture_image.view, null);
         (device.vkDestroyImageView)(device.handle, swapchain.cursor_texture_image.view, null);
-        (device.vkDestroyImage)(device.handle, swapchain.depth_image.handle, null);
         (device.vkDestroyImage)(device.handle, swapchain.texture_image.handle, null);
         (device.vkDestroyImage)(device.handle, swapchain.cursor_texture_image.handle, null);
         (device.vkDestroySampler)(device.handle, swapchain.texture_sampler, null);
