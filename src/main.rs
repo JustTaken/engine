@@ -7,7 +7,7 @@ pub fn main() {
     let default_height = 1080;
     let char_set = (32..127).collect::<Vec<u8>>();
 
-    let font = font::init("assets/fonts/vic.ttf", &char_set, 100).unwrap();
+    let font = font::init("assets/fonts/vic.ttf", &char_set, 80).unwrap();
 
     let mut window = wayland::init("Engine name", default_width, default_height, font.scale).unwrap();
     let instance = vulkan::instance(&window.extensions).unwrap();

@@ -250,7 +250,6 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
                 }
             } else if let TableType::Max = typ {
                 reader.seek(std::io::SeekFrom::Start(table.offset as u64 + 4)).unwrap();
-                //let glyphs_count = read(&mut reader, 2)?;
             } else if let TableType::Header = typ {
                 reader.seek(std::io::SeekFrom::Start(table.offset as u64)).unwrap();
                 header = new_header(&mut reader).ok();

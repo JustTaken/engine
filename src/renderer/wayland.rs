@@ -79,20 +79,6 @@ fn get_this_line_or_max(lines: &Vec<Vec<u8>>, i: usize) -> usize {
     }
 }
 
-// fn pop_char(chars: &mut UniqueChars, c: u8, position: [u8; 2]) {
-//     let c = c as usize - 32;
-//     let offset = chars.offset[c] as usize;
-
-//     for i in 0..chars.positions[offset].len() {
-//         if chars.positions[offset][i][0] == position[0] && chars.positions[offset][i][1] == position[1] {
-//             chars.positions[offset].remove(i);
-//             break;
-//         }
-//     }
-
-//     chars.changed = true;
-// }
-
 fn push_char(chars: &mut UniqueChars, c: u8, position: [u8; 2]) {
     let c = c as usize - 32;
 
@@ -334,18 +320,28 @@ fn next_line(core: &mut Core) {
 }
 
 fn insert_new_line(core: &mut Core) {
+    let line = (core.cursor.ypos + core.cursor.y_offset) as usize;
+
     if core.cursor.ypos + 1 >= core.chars_per_coloum as u8 {
         core.cursor.y_offset += 1;
     } else {
         core.cursor.ypos += 1;
     }
 
+    let xpos = (core.cursor.xpos + core.cursor.x_offset) as usize;
+
+    let mut vec = Vec::with_capacity(255);
+    vec.extend_from_slice(&core.lines[line][xpos..]);
+
+    core.lines.insert(line + 1, vec);
+    core.lines[line].truncate(xpos);
+
     core.cursor.xpos = 0;
     core.cursor.x_offset = 0;
 
-    if core.lines.len() <= (core.cursor.ypos + core.cursor.y_offset) as usize {
-        core.lines.push(Vec::with_capacity(255));
-    }
+    // if core.lines.len() <= (core.cursor.ypos + core.cursor.y_offset) as usize {
+    //     core.lines.push(Vec::with_capacity(255));
+    // }
 
     update_chars(core);
     core.changed = true;
@@ -387,7 +383,7 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
     let code = id as u8;
 
     if state == 1 {
-        // let start = std::time::Instant::now();
+        let start = std::time::Instant::now();
 
         if let Ok(b) = try_ascci(code) {
             let c = if core.shift_modifier {
@@ -423,8 +419,8 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
             core.control_modifier = true;
         }
 
-        // let elapsed_time = start.elapsed();
-        // println!("buffer modification run in {} ns", elapsed_time.as_nanos());
+        let elapsed_time = start.elapsed();
+        println!("buffer modification run in {} ns", elapsed_time.as_nanos());
     } else if state == 0 {
         if code == SHIFT {
             core.shift_modifier = false;
