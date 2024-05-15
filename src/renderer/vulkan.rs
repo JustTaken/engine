@@ -1426,9 +1426,10 @@ pub fn swapchain(
 
     let global_uniform = [
         ratio,
-        font.scale / 2.0,
+        font.scale,
         -1.0,
         -1.0,
+        font.x_ratio,
     ];
 
     let global_uniform_buffer = buffer::<f32>(device, vulkan::BUFFER_USAGE_UNIFORM_BUFFER_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, global_uniform.len())?;

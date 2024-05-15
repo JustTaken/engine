@@ -20,17 +20,18 @@ struct Table {
 }
 
 pub struct GlyphMetrics {
-    pub width: usize,
-    pub x_offset: usize,
-    pub y_offset: usize,
+    pub width: u32,
+    pub x_offset: u32,
+    pub y_offset: u32,
 }
 
 pub struct TrueTypeFont {
     pub texture: Vec<u8>,
-    pub width: usize,
-    pub height: usize,
+    pub width: u32,
+    pub height: u32,
     pub metrics: Vec<GlyphMetrics>,
-    pub line_height: usize,
+    pub line_height: u32,
+    pub x_ratio: f32,
     pub scale: f32,
 }
 
@@ -47,8 +48,8 @@ struct Glyph {
     contour_ends: Vec<u16>,
     points: Vec<Point>,
     boundary: Box,
-    left_bearing: usize,
-    advance: usize,
+    left_bearing: u32,
+    advance: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -268,8 +269,13 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
 
     if let (Some(cmap), Some(header)) = (cmap, header) {
         let scale = size as f32 / header.units_pem as f32;
-        let line_height = ((header.boundary.y_max - header.boundary.y_min) as f32 * scale) as usize;
+        let line_height = ((header.boundary.y_max - header.boundary.y_min) as f32 * scale) as u32;
+
         let index_to_loc = header.index_to_loc_format as u32;
+
+        let first_ascci_index = get_index(&cmap, b'a');
+        let padding_metrics = get_padding_metrics(&mut reader, num_of_long_h_metrics, horizontal_metrics_table_offset, first_ascci_index, scale);
+        let x_ratio = padding_metrics[0] as f32 / line_height as f32;
 
         let (glyphs_per_row, line_count) = {
             let len = code_points.len() as f32;
@@ -278,7 +284,6 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
         };
 
         let mut texture_width = 0;
-        // let mut texture_height = 0;
 
         let mut x_offset = 0;
         let mut y_offset = 0;
@@ -303,22 +308,13 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
                 scale,
             );
 
-            let glyph_width = ((glyph.boundary.x_max - glyph.boundary.x_min) as f32 * scale) as usize;
-
-            let box_width = glyph_width + glyph.left_bearing + glyph.advance;
-
             metrics.push(GlyphMetrics {
-                width: box_width,
+                width: glyph.advance,
                 x_offset,
                 y_offset,
             });
 
-            // if glyph_height > max_height {
-            //     max_height = glyph_height;
-            //     texture_height = y_offset + glyph_height;
-            // }
-
-            x_offset += box_width;
+            x_offset += glyph.advance;
 
             i += 1;
             if i == glyphs_per_row {
@@ -336,11 +332,11 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
             glyphs.push(glyph);
         }
 
-        let texture_height = line_count as usize * line_height;
-        let mut texture: Vec<u8> = vec![0; texture_width * texture_height];
+        let texture_height = line_count * line_height;
+        let mut texture: Vec<u8> = vec![0; (texture_width * texture_height) as usize];
 
         for (i, glyph) in glyphs.iter().enumerate() {
-            let bottom_padding = ((glyph.boundary.y_min - header.boundary.y_min) as f32 * scale) as usize;
+            let bottom_padding = ((glyph.boundary.y_min - header.boundary.y_min) as f32 * scale) as u32;
 
             modify_texture(
                 &mut texture,
@@ -359,6 +355,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
             height: texture_height,
             metrics,
             line_height,
+            x_ratio,
             scale,
         })
     } else {
@@ -373,6 +370,22 @@ fn goto_glyph_offset(reader: &mut BufReader<std::fs::File>, index_to_loc: u32, l
     reader.seek(std::io::SeekFrom::Start((offset + glyph_table_offset) as u64)).unwrap();
 }
 
+fn get_padding_metrics(reader: &mut BufReader<std::fs::File>, long_h_metrics_count: u32, hhea_table_offset: u32, index: u32, scale: f32) -> [u32; 2] {
+    if index < long_h_metrics_count {
+        reader.seek(std::io::SeekFrom::Start((hhea_table_offset + 4 * index) as u64)).unwrap();
+        let advance = read(reader, 2).unwrap() as f32;
+        let left_bearing = read(reader, 2).unwrap() as f32;
+        [(advance * scale) as u32, (left_bearing * scale) as u32]
+    } else {
+        reader.seek(std::io::SeekFrom::Start(hhea_table_offset as u64 + 4 * (long_h_metrics_count - 1) as u64)).unwrap();
+        let advance = read(reader, 2).unwrap() as f32;
+        reader.seek(std::io::SeekFrom::Current(2)).unwrap();
+        reader.seek(std::io::SeekFrom::Current(2 * (index - long_h_metrics_count) as i64)).unwrap();
+        let left_bearing = read(reader, 2).unwrap() as f32;
+        [(advance * scale) as u32, (left_bearing * scale) as u32]
+    }
+}
+
 fn new_glyph(
     reader: &mut BufReader<std::fs::File>,
     index_to_loc: u32,
@@ -383,18 +396,7 @@ fn new_glyph(
     code_point: u32,
     scale: f32,
 ) -> Glyph {
-    let (advance, left_bearing) = if code_point < long_h_metrics_count {
-        reader.seek(std::io::SeekFrom::Start((hhea_table_offset + 4 * code_point) as u64)).unwrap();
-        let advance = read(reader, 2).unwrap() as f32;
-        let left_bearing = read(reader, 2).unwrap() as f32;
-        ((advance * scale) as usize, (left_bearing * scale) as usize)
-    } else {
-        reader.seek(std::io::SeekFrom::Start(hhea_table_offset as u64 + 4 * (long_h_metrics_count - 1) as u64)).unwrap();
-        let advance = read(reader, 2).unwrap() as f32;
-        reader.seek(std::io::SeekFrom::Current(2 * (code_point - long_h_metrics_count) as i64)).unwrap();
-        let left_bearing = read(reader, 2).unwrap() as f32;
-        ((advance * scale) as usize, (left_bearing * scale) as usize)
-    };
+    let padding_metrics = get_padding_metrics(reader, long_h_metrics_count, hhea_table_offset, code_point, scale);
 
     goto_glyph_offset(reader, index_to_loc, location_table_offset, code_point, glyph_table_offset);
     let number_of_contours = read(reader, 2).unwrap() as i16;
@@ -413,8 +415,8 @@ fn new_glyph(
             contour_ends: Vec::new(),
             points: Vec::new(),
             boundary: boundary.clone(),
-            left_bearing,
-            advance,
+            advance: padding_metrics[0],
+            left_bearing: padding_metrics[1],
         };
 
         while flag & MORE_COMPONENTS != 0 {
@@ -464,8 +466,8 @@ fn new_glyph(
             [0, 0],
         ).unwrap();
 
-        glyph.left_bearing = left_bearing;
-        glyph.advance = advance;
+        glyph.left_bearing = padding_metrics[1];
+        glyph.advance = padding_metrics[0];
 
         glyph
     }
@@ -625,9 +627,9 @@ fn read_compound_glyph(
 
 fn modify_texture(
     texture: &mut Vec<u8>,
-    texture_width: usize,
-    width: usize,
-    height: usize,
+    texture_width: u32,
+    width: u32,
+    height: u32,
     contour_ends: &[u16],
     points: &[Point],
     quad_offset: [u32; 2],
@@ -832,7 +834,7 @@ fn modify_texture(
                 }
             }
 
-            let mut y_pos = (ym as i32 + uy) as usize * texture_width;
+            let mut y_pos = (ym as i32 + uy) as usize * texture_width as usize;
 
             while texture[(xm as i32 + ux) as usize + y_pos as usize] != 0 {
                 xm = (xm as i32 + ux) as u32;
@@ -851,7 +853,7 @@ fn modify_texture(
     }
 
     for point in contours_inner_points.iter() {
-        let mut points_to_fill: Vec<[usize; 2]> = Vec::with_capacity(width * height);
+        let mut points_to_fill: Vec<[usize; 2]> = Vec::with_capacity((width * height) as usize);
         let mut last: usize = 0;
 
         points_to_fill.push(*point);
@@ -870,13 +872,13 @@ fn modify_texture(
                 texture[left[0] + left[1]] = 255;
             }
 
-            let down = [points_to_fill[last][0], points_to_fill[last][1] + texture_width];
+            let down = [points_to_fill[last][0], points_to_fill[last][1] + texture_width as usize];
             if texture[down[0] + down[1]] == 0 {
                 points_to_fill.push(down);
                 texture[down[0] + down[1]] = 255;
             }
 
-            let up = [points_to_fill[last][0], points_to_fill[last][1] - texture_width];
+            let up = [points_to_fill[last][0], points_to_fill[last][1] - texture_width as usize];
             if texture[up[0] + up[1]] == 0 {
                 points_to_fill.push(up);
                 texture[up[0] + up[1]] = 255;

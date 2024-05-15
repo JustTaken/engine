@@ -161,6 +161,7 @@ pub const R8G8_UNORM: u32 = 16;
 pub const R8G8B8A8_SRGB: u32 = 43;
 pub const R32G32B32_SFLOAT: u32 = 106;
 pub const R32G32_SFLOAT: u32 = 103;
+pub const R32_SFLOAT: u32 = 100;
 
 pub const D32_SFLOAT: u32 = 126;
 pub const D24_UNORM_S8_UINT: u32 = 129;

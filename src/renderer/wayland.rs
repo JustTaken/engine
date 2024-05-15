@@ -79,21 +79,21 @@ fn get_this_line_or_max(lines: &Vec<Vec<u8>>, i: usize) -> usize {
     }
 }
 
-fn remove_char(chars: &mut UniqueChars, c: u8, position: [u8; 2]) {
-    let c = c as usize - 32;
-    let offset = chars.offset[c] as usize;
+// fn pop_char(chars: &mut UniqueChars, c: u8, position: [u8; 2]) {
+//     let c = c as usize - 32;
+//     let offset = chars.offset[c] as usize;
 
-    for i in 0..chars.positions[offset].len() {
-        if chars.positions[offset][i][0] == position[0] && chars.positions[offset][i][1] == position[1] {
-            chars.positions[offset].remove(i);
-            break;
-        }
-    }
+//     for i in 0..chars.positions[offset].len() {
+//         if chars.positions[offset][i][0] == position[0] && chars.positions[offset][i][1] == position[1] {
+//             chars.positions[offset].remove(i);
+//             break;
+//         }
+//     }
 
-    chars.changed = true;
-}
+//     chars.changed = true;
+// }
 
-fn insert_char(chars: &mut UniqueChars, c: u8, position: [u8; 2]) {
+fn push_char(chars: &mut UniqueChars, c: u8, position: [u8; 2]) {
     let c = c as usize - 32;
 
     if chars.offset[c] == 255 {
@@ -134,17 +134,20 @@ fn delete_prev_char(core: &mut Core) {
     if core.cursor.xpos + core.cursor.x_offset == 0 {
         if core.cursor.ypos > 0 {
             core.cursor.ypos -= 1;
+
+            let len = core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].len();
+
+            core.cursor.xpos = (len % core.chars_per_row) as u8;
+            core.cursor.x_offset = len as u8 - core.cursor.xpos;
         } else if core.cursor.y_offset > 0 {
             core.cursor.y_offset -= 1;
+            let len = core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].len();
+
+            core.cursor.xpos = (len % core.chars_per_row) as u8;
+            core.cursor.x_offset = len as u8 - core.cursor.xpos;
         } else {
             return;
         }
-
-        let len = core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].len();
-
-        core.cursor.xpos = (len % core.chars_per_row) as u8;
-        core.cursor.x_offset = len as u8 - core.cursor.xpos;
-        update_chars(core);
     } else if core.cursor.xpos == 0 {
         core.cursor.x_offset -= 1;
 
@@ -152,8 +155,46 @@ fn delete_prev_char(core: &mut Core) {
     } else {
         core.cursor.xpos -= 1;
 
-        let c = core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].remove((core.cursor.xpos + core.cursor.x_offset) as usize);
-        remove_char(&mut core.unique_chars, c, [core.cursor.xpos, core.cursor.ypos]);
+        core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].remove((core.cursor.xpos + core.cursor.x_offset) as usize);
+        // remove_char(&mut core.unique_chars, c, [core.cursor.xpos, core.cursor.ypos]);
+    }
+
+    update_chars(core);
+    core.changed = true;
+}
+
+fn start_of_line(core: &mut Core) {
+    core.cursor.xpos = 0;
+    if core.cursor.x_offset != 0 {
+        core.cursor.x_offset = 0;
+        update_chars(core);
+    }
+
+    core.changed = true;
+}
+
+fn end_of_line(core: &mut Core) {
+    let line = core.cursor.ypos + core.cursor.y_offset;
+    let len = core.lines[line as usize].len();
+
+    if len < core.chars_per_row {
+        core.cursor.xpos = len as u8;
+        if core.cursor.x_offset != 0 {
+            core.cursor.x_offset = 0;
+            update_chars(core);
+        }
+    } else if len > core.cursor.x_offset as usize {
+        if len > core.cursor.x_offset as usize + core.chars_per_row {
+            core.cursor.xpos = core.chars_per_row as u8;
+            core.cursor.x_offset = (len - core.cursor.xpos as usize) as u8;
+            update_chars(core);
+        } else {
+            core.cursor.xpos = (len - core.cursor.x_offset as usize) as u8;
+        }
+    } else {
+        core.cursor.xpos = core.chars_per_row as u8;
+        core.cursor.x_offset = (len - core.cursor.x_offset as usize) as u8;
+        update_chars(core);
     }
 
     core.changed = true;
@@ -172,6 +213,7 @@ fn next_char(core: &mut Core) {
             core.cursor.y_offset += 1;
             core.cursor.xpos = 0;
             core.cursor.x_offset = 0;
+            update_chars(core);
         } else {
             core.cursor.xpos = 0;
             core.cursor.x_offset = 0;
@@ -181,10 +223,10 @@ fn next_char(core: &mut Core) {
         core.cursor.xpos += 1;
     } else {
         core.cursor.x_offset += 1;
+        update_chars(core);
     }
 
     core.changed = true;
-    update_chars(core);
 }
 
 fn prev_char(core: &mut Core) {
@@ -200,65 +242,94 @@ fn prev_char(core: &mut Core) {
         let len = core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].len();
 
         core.cursor.xpos = (len % core.chars_per_row) as u8;
-        core.cursor.x_offset = len as u8 - core.cursor.xpos;
+        let x_offset = len as u8 - core.cursor.xpos;
+
+        if x_offset != core.cursor.x_offset {
+            core.cursor.x_offset = x_offset;
+            update_chars(core);
+        }
 
     } else if core.cursor.xpos == 0 {
         core.cursor.x_offset -= 1;
+        update_chars(core);
     } else {
         core.cursor.xpos -= 1;
     }
 
     core.changed = true;
-    update_chars(core);
 }
 
 fn prev_line(core: &mut Core) {
     if core.cursor.ypos + core.cursor.y_offset > 0 {
+        let mut has_to_update = false;
         if core.cursor.ypos == 0 {
             core.cursor.y_offset -= 1;
+            has_to_update = true;
         } else {
             core.cursor.ypos -= 1;
         }
 
         let xpos = core.cursor.xpos + core.cursor.x_offset;
         let ypos = core.cursor.ypos + core.cursor.y_offset;
-        let xpos = this_pos_or_max(&core.lines[ypos as usize], xpos as usize);
+        let len = core.lines[ypos as usize].len();
 
-        core.cursor.xpos = (xpos % core.chars_per_row) as u8;
-        core.cursor.x_offset = (xpos - core.cursor.xpos as usize) as u8;
+        if core.cursor.x_offset as usize > len {
+            if len > core.chars_per_row {
+                core.cursor.xpos = core.chars_per_row as u8;
+                core.cursor.x_offset = (core.cursor.xpos as usize - len) as u8;
+            } else {
+                core.cursor.xpos = len as u8;
+                core.cursor.x_offset = 0;
+            }
+            has_to_update = true;
+
+        } else if (xpos as usize) > len {
+            core.cursor.xpos = (len - core.cursor.x_offset as usize) as u8;
+        }
+
+        if has_to_update {
+            update_chars(core);
+        }
 
         core.changed = true;
-        update_chars(core);
-    }
-}
-
-fn this_pos_or_max(line: &[u8], x: usize) -> usize {
-    let len = line.len();
-
-    if len < x {
-        len
-    } else {
-        x
     }
 }
 
 fn next_line(core: &mut Core) {
     let ypos = (core.cursor.ypos + core.cursor.y_offset + 1) as usize;
     if ypos < core.lines.len() {
+
+        let mut has_to_update = false;
         if core.cursor.ypos + 1 >= core.chars_per_coloum as u8 {
             core.cursor.y_offset += 1;
+            has_to_update = true;
         } else {
             core.cursor.ypos += 1;
         }
 
         let xpos = core.cursor.xpos + core.cursor.x_offset;
-        let xpos = this_pos_or_max(&core.lines[ypos], xpos as usize);
+        let ypos = core.cursor.ypos + core.cursor.y_offset;
+        let len = core.lines[ypos as usize].len();
 
-        core.cursor.xpos = (xpos % core.chars_per_row) as u8;
-        core.cursor.x_offset = (xpos - core.cursor.xpos as usize) as u8;
+        if core.cursor.x_offset as usize > len {
+            if len > core.chars_per_row {
+                core.cursor.xpos = core.chars_per_row as u8;
+                core.cursor.x_offset = (core.cursor.xpos as usize - len) as u8;
+            } else {
+                core.cursor.xpos = len as u8;
+                core.cursor.x_offset = 0;
+            }
+            has_to_update = true;
+
+        } else if (xpos as usize) > len {
+            core.cursor.xpos = (len - core.cursor.x_offset as usize) as u8;
+        }
+
+        if has_to_update {
+            update_chars(core);
+        }
 
         core.changed = true;
-        update_chars(core);
     }
 }
 
@@ -269,16 +340,15 @@ fn insert_new_line(core: &mut Core) {
         core.cursor.ypos += 1;
     }
 
+    core.cursor.xpos = 0;
+    core.cursor.x_offset = 0;
 
     if core.lines.len() <= (core.cursor.ypos + core.cursor.y_offset) as usize {
         core.lines.push(Vec::with_capacity(255));
     }
 
-    core.cursor.xpos = 0;
-    core.cursor.x_offset = 0;
-
-    core.changed = true;
     update_chars(core);
+    core.changed = true;
 }
 
 fn insert_char_at_current_position(core: &mut Core, c: u8) {
@@ -286,12 +356,11 @@ fn insert_char_at_current_position(core: &mut Core, c: u8) {
 
     if core.cursor.xpos >= core.chars_per_row as u8 {
         core.cursor.x_offset += 1;
-        update_chars(core);
     } else {
-        insert_char(&mut core.unique_chars, c, [core.cursor.xpos, core.cursor.ypos]);
         core.cursor.xpos += 1;
     }
 
+    update_chars(core);
     core.changed = true;
 }
 
@@ -336,6 +405,10 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
                     prev_char(core);
                 } else if c == b'f' {
                     next_char(core);
+                } else if c == b'e' {
+                    end_of_line(core);
+                } else if c == b'a' {
+                    start_of_line(core);
                 }
             } else {
                 insert_char_at_current_position(core, c);
