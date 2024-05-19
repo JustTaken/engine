@@ -14,9 +14,20 @@ pub struct Core {
     pub changed: bool,
 
     scale: f32,
+    x_ratio: f32,
+    window_ratio: f32,
+
     chars_per_row: usize,
     chars_per_coloum: usize,
 
+    key_delay: std::time::Duration,
+    key_rate: std::time::Duration,
+
+    last_inserted_char: u8,
+    last_function: Option<fn(&mut Core)>,
+    last_fetch_rate: std::time::Instant,
+    last_fetch_delay: std::time::Instant,
+    alt_modifier: bool,
     shift_modifier: bool,
     control_modifier: bool,
 
@@ -79,18 +90,20 @@ fn get_this_line_or_max(lines: &Vec<Vec<u8>>, i: usize) -> usize {
     }
 }
 
-fn push_char(chars: &mut UniqueChars, c: u8, position: [u8; 2]) {
-    let c = c as usize - 32;
+fn noop(_: &mut Core) {}
 
-    if chars.offset[c] == 255 {
-        chars.offset[c] = chars.positions.len() as u8;
-        chars.positions.push(Vec::with_capacity(50));
-    }
+// fn push_char(chars: &mut UniqueChars, c: u8, position: [u8; 2]) {
+//     let c = c as usize - 32;
 
-    chars.positions[chars.offset[c] as usize].push(position);
+//     if chars.offset[c] == 255 {
+//         chars.offset[c] = chars.positions.len() as u8;
+//         chars.positions.push(Vec::with_capacity(50));
+//     }
 
-    chars.changed = true;
-}
+//     chars.positions[chars.offset[c] as usize].push(position);
+
+//     chars.changed = true;
+// }
 
 fn update_chars(core: &mut Core) {
     let max_line = get_this_line_or_max(&core.lines, core.cursor.y_offset as usize + core.chars_per_coloum);
@@ -142,7 +155,6 @@ fn delete_prev_char(core: &mut Core) {
         core.cursor.xpos -= 1;
 
         core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].remove((core.cursor.xpos + core.cursor.x_offset) as usize);
-        // remove_char(&mut core.unique_chars, c, [core.cursor.xpos, core.cursor.ypos]);
     }
 
     update_chars(core);
@@ -151,6 +163,7 @@ fn delete_prev_char(core: &mut Core) {
 
 fn start_of_line(core: &mut Core) {
     core.cursor.xpos = 0;
+
     if core.cursor.x_offset != 0 {
         core.cursor.x_offset = 0;
         update_chars(core);
@@ -165,14 +178,17 @@ fn end_of_line(core: &mut Core) {
 
     if len < core.chars_per_row {
         core.cursor.xpos = len as u8;
+
         if core.cursor.x_offset != 0 {
             core.cursor.x_offset = 0;
+
             update_chars(core);
         }
     } else if len > core.cursor.x_offset as usize {
         if len > core.cursor.x_offset as usize + core.chars_per_row {
             core.cursor.xpos = core.chars_per_row as u8;
             core.cursor.x_offset = (len - core.cursor.xpos as usize) as u8;
+
             update_chars(core);
         } else {
             core.cursor.xpos = (len - core.cursor.x_offset as usize) as u8;
@@ -180,6 +196,7 @@ fn end_of_line(core: &mut Core) {
     } else {
         core.cursor.xpos = core.chars_per_row as u8;
         core.cursor.x_offset = (len - core.cursor.x_offset as usize) as u8;
+
         update_chars(core);
     }
 
@@ -199,6 +216,7 @@ fn next_char(core: &mut Core) {
             core.cursor.y_offset += 1;
             core.cursor.xpos = 0;
             core.cursor.x_offset = 0;
+
             update_chars(core);
         } else {
             core.cursor.xpos = 0;
@@ -232,11 +250,13 @@ fn prev_char(core: &mut Core) {
 
         if x_offset != core.cursor.x_offset {
             core.cursor.x_offset = x_offset;
+
             update_chars(core);
         }
 
     } else if core.cursor.xpos == 0 {
         core.cursor.x_offset -= 1;
+
         update_chars(core);
     } else {
         core.cursor.xpos -= 1;
@@ -330,7 +350,7 @@ fn insert_new_line(core: &mut Core) {
 
     let xpos = (core.cursor.xpos + core.cursor.x_offset) as usize;
 
-    let mut vec = Vec::with_capacity(255);
+    let mut vec = Vec::with_capacity(core.chars_per_row);
     vec.extend_from_slice(&core.lines[line][xpos..]);
 
     core.lines.insert(line + 1, vec);
@@ -339,15 +359,12 @@ fn insert_new_line(core: &mut Core) {
     core.cursor.xpos = 0;
     core.cursor.x_offset = 0;
 
-    // if core.lines.len() <= (core.cursor.ypos + core.cursor.y_offset) as usize {
-    //     core.lines.push(Vec::with_capacity(255));
-    // }
-
     update_chars(core);
     core.changed = true;
 }
 
-fn insert_char_at_current_position(core: &mut Core, c: u8) {
+fn insert_char_at_current_position(core: &mut Core) {
+    let c = core.last_inserted_char;
     core.lines[(core.cursor.ypos + core.cursor.y_offset) as usize].insert((core.cursor.xpos + core.cursor.x_offset) as usize, c);
 
     if core.cursor.xpos >= core.chars_per_row as u8 {
@@ -365,25 +382,54 @@ pub fn set_unchanged(core: &mut Core) {
     core.unique_chars.changed = false;
 }
 
-pub fn update(core: &Core) {
+pub fn update(core: &mut Core) {
     unsafe {
         wayland::wl_proxy_marshal_flags(core.surface as *mut wayland::wl_proxy, wayland::WL_SURFACE_COMMIT, std::ptr::null(), wayland::wl_proxy_get_version(core.surface as *mut wayland::wl_proxy), 0);
         wayland::wl_display_roundtrip(core.display);
     };
+
+    if let Some(f) = core.last_function {
+        if core.last_fetch_delay.elapsed() >= core.key_delay {
+            if core.last_fetch_rate.elapsed() >= core.key_rate {
+                f(core);
+                core.last_fetch_rate = std::time::Instant::now();
+            }
+        }
+    }
 }
+
+const SHIFT_BIT: u8 = 0x01;
+const CAPSLOCK_BIT: u8 = 0x02;
+const CONTROL_BIT: u8 = 0x04;
+const ALT_BIT: u8 = 0x08;
 
 unsafe extern "C" fn keymap(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: i32, _: u32) {}
 unsafe extern "C" fn enter(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: *mut wayland::wl_surface, _: *mut wayland::wl_array) {}
 unsafe extern "C" fn leave(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: *mut wayland::wl_surface,) {}
-unsafe extern "C" fn modifiers(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: u32, _: u32, _: u32, _: u32) {}
-unsafe extern "C" fn repeat_info(_: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: i32, _: i32) {}
+unsafe extern "C" fn modifiers(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, depressed: u32, _: u32, locked: u32, _: u32) {
+    let core = std::mem::transmute::<*mut std::ffi::c_void, &mut Core>(data);
+    let pressed = depressed as u8 | locked as u8;
+
+    core.control_modifier = pressed & CONTROL_BIT > 0;
+    core.shift_modifier = pressed & (SHIFT_BIT | CAPSLOCK_BIT) > 0;
+    core.alt_modifier = pressed & ALT_BIT > 0;
+}
+
+unsafe extern "C" fn repeat_info(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, rate: i32, delay: i32) {
+    let core = std::mem::transmute::<*mut std::ffi::c_void, &mut Core>(data);
+    core.key_delay = std::time::Duration::from_millis(delay as u64);
+    core.key_rate = std::time::Duration::from_millis(rate as u64);
+}
 
 unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboard, _: u32, _: u32, id: u32, state: u32) {
     let core = std::mem::transmute::<*mut std::ffi::c_void, &mut Core>(data);
     let code = id as u8;
 
+    core.last_fetch_delay = std::time::Instant::now();
+    core.last_function = None;
+
     if state == 1 {
-        let start = std::time::Instant::now();
+        // let start = std::time::Instant::now();
 
         if let Ok(b) = try_ascci(code) {
             let c = if core.shift_modifier {
@@ -394,38 +440,30 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
 
             if core.control_modifier {
                 if c == b'p' {
-                    prev_line(core);
+                    core.last_function = Some(prev_line);
                 } else if c == b'n' {
-                    next_line(core);
+                    core.last_function = Some(next_line);
                 } else if c == b'b' {
-                    prev_char(core);
+                    core.last_function = Some(prev_char);
                 } else if c == b'f' {
-                    next_char(core);
+                    core.last_function = Some(next_char);
                 } else if c == b'e' {
-                    end_of_line(core);
+                    core.last_function = Some(end_of_line);
                 } else if c == b'a' {
-                    start_of_line(core);
+                    core.last_function = Some(start_of_line);
                 }
+            } else if core.alt_modifier {
             } else {
-                insert_char_at_current_position(core, c);
+                core.last_function = Some(insert_char_at_current_position);
+                core.last_inserted_char = c;
             }
         } else if code == ENTER {
-            insert_new_line(core);
+            core.last_function = Some(insert_new_line);
         } else if code == BACKSPACE {
-            delete_prev_char(core);
-        } else if code == SHIFT {
-            core.shift_modifier = true;
-        } else if code == CONTROL {
-            core.control_modifier = true;
+            core.last_function = Some(delete_prev_char);
         }
-
-        let elapsed_time = start.elapsed();
-        println!("buffer modification run in {} ns", elapsed_time.as_nanos());
-    } else if state == 0 {
-        if code == SHIFT {
-            core.shift_modifier = false;
-        } else if code == CONTROL {
-            core.control_modifier = false;
+        if let Some(f) = core.last_function {
+            f(core)
         }
     }
 }
@@ -461,23 +499,9 @@ unsafe extern "C" fn toplevel_configure(data: *mut std::ffi::c_void, _: *mut way
         core.height = height as u32;
         core.changed = true;
 
-        core.chars_per_coloum = (2.0 / core.scale) as usize;
-        core.chars_per_row = (2.0 / core.scale * core.width as f32 / core.height as f32) as usize - 1;
-
-        // if chars_per_row != core.chars_per_row {
-        //     core.chars_per_row = chars_per_row;
-        //     for i in core.cursor_position_offset[1]..core.content.len() {
-        //         core.lines_with_offset[i - core.cursor_position_offset[1]] = core.content[i].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + chars_per_row);
-        //     }
-        // }
-
-        // if chars_per_coloum > core.lines_with_offset.len() {
-        //     for i in chars_per_coloum..core.lines_with_offset.len() {
-        //         core.lines_with_offset[i] = core.content[core.cursor_position_offset[1] + i].get_slice(core.cursor_position_offset[0], core.cursor_position_offset[0] + chars_per_row);
-        //     }
-        // } else {
-        //     core.lines_with_offset.resize(chars_per_coloum, &[]);
-        // }
+        core.window_ratio = core.height as f32 / core.width as f32;
+        core.chars_per_coloum = (1.0 / core.scale) as usize;
+        core.chars_per_row = (1.0 / (core.scale * core.x_ratio * core.window_ratio)) as usize;
     }
 }
 
@@ -522,7 +546,7 @@ unsafe extern "C" fn global_listener(data: *mut std::ffi::c_void, wl_registry: *
             0,
             name,
             wayland::wl_seat_interface.name,
-            1,
+            4,
             std::ptr::null::<std::ffi::c_void>(),
         ) as *mut wayland::wl_seat;
     }
@@ -533,9 +557,11 @@ pub fn init(
     width: u32,
     height: u32,
     scale: f32,
+    x_ratio: f32,
 ) -> Result<Box<Core>, WaylandError> {
-    let chars_per_coloum = (2.0 / scale) as usize;
-    let chars_per_row = (2.0 / scale * width as f32 / height as f32) as usize;
+    let window_ratio = height as f32 / width as f32;
+    let chars_per_coloum = (1.0 / scale) as usize;
+    let chars_per_row = (1.0 / (scale * x_ratio * window_ratio)) as usize;
 
     let mut core = Box::new(Core {
         display: std::ptr::null_mut(),
@@ -554,10 +580,12 @@ pub fn init(
         width,
         height,
         scale,
+        x_ratio,
+        window_ratio,
         running: true,
         changed: false,
+        lines: vec![Vec::with_capacity(chars_per_row)],
         chars_per_row,
-        lines: vec![Vec::with_capacity(50)],
         chars_per_coloum,
         unique_chars: UniqueChars {
             changed: true,
@@ -570,6 +598,13 @@ pub fn init(
             x_offset: 0,
             y_offset: 0,
         },
+        key_rate: std::time::Duration::from_millis(20),
+        key_delay: std::time::Duration::from_millis(200),
+        last_function: Some(noop),
+        last_inserted_char: b' ',
+        last_fetch_delay: std::time::Instant::now(),
+        last_fetch_rate: std::time::Instant::now(),
+        alt_modifier: false,
         shift_modifier: false,
         control_modifier: false,
         registry_listener: wayland::wl_registry_listener {
@@ -656,8 +691,6 @@ pub fn shutdown(core: &Core) {
 }
 
 const ENTER: u8 = 28;
-const SHIFT: u8 = 42;
-const CONTROL: u8 = 58;
 const BACKSPACE: u8 = 14;
 
 fn try_ascci(u: u8) -> Result<[u8; 2], WaylandError> {

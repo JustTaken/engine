@@ -1985,6 +1985,7 @@ fn record_command_buffer(
         index_buffer,
         uniform_descriptor_set,
         cursor_texture_descriptor_set,
+        // texture_descriptor_set,
         graphics_pipeline,
         cursor,
     );

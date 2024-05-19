@@ -5,11 +5,13 @@ use engine::font;
 pub fn main() {
     let default_width = 1920;
     let default_height = 1080;
-    let char_set = (32..127).collect::<Vec<u8>>();
+    // let char_set = (32..127).collect::<Vec<u8>>();
+    let char_set = [b'B'];
+    // let char_set = [89 + 32];
 
-    let font = font::init("assets/fonts/vic.ttf", &char_set, 80).unwrap();
+    let font = font::init("assets/fonts/font.ttf", &char_set, 20).unwrap();
 
-    let mut window = wayland::init("Engine name", default_width, default_height, font.scale).unwrap();
+    let mut window = wayland::init("Engine name", default_width, default_height, font.scale, font.x_ratio).unwrap();
     let instance = vulkan::instance(&window.extensions).unwrap();
     let surface = vulkan::surface(&instance, window.display, window.surface).unwrap();
     let device = vulkan::device(&instance, surface).unwrap();
@@ -42,7 +44,7 @@ pub fn main() {
             wayland::set_unchanged(&mut window);
         }
 
-        wayland::update(&window);
+        wayland::update(&mut window);
     }
 
     vulkan::shutdown_swapchain(&device, &swapchain);

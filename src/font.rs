@@ -35,7 +35,6 @@ pub struct TrueTypeFont {
     pub scale: f32,
 }
 
-#[derive(Clone)]
 struct Box {
     x_min: i16,
     x_max: i16,
@@ -44,15 +43,33 @@ struct Box {
 }
 
 #[derive(Clone)]
+struct Contour {
+    lines: Vec<ContourLine>,
+    winding: Winding,
+}
+
+#[derive(Clone)]
+struct ContourLine {
+    start: [u32; 2],
+    end: [u32; 2],
+}
+
+#[derive(Debug, Clone)]
+enum Winding {
+    ClockWise,
+    CounterClockWise,
+}
+
 struct Glyph {
-    contour_ends: Vec<u16>,
-    points: Vec<Point>,
+    contours: Vec<Contour>,
+    // contour_ends: Vec<u16>,
+    // points: Vec<Point>,
     boundary: Box,
     left_bearing: u32,
     advance: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct Point {
     x: i16,
     y: i16,
@@ -103,7 +120,7 @@ struct Map {
     glyph_code: Vec<u32>,
 }
 
-fn construct_cmap(reader: &mut BufReader<std::fs::File>) -> Result<Map, ParseError> {
+fn new_map(reader: &mut BufReader<std::fs::File>) -> Result<Map, ParseError> {
     if 0 != read(reader, 2).unwrap() {
         return Err(ParseError::WrongMagicNumber);
     }
@@ -244,7 +261,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
                     let format = read(&mut reader, 2)?;
 
                     if format == 12 {
-                        cmap = construct_cmap(&mut reader).ok();
+                        cmap = new_map(&mut reader).ok();
                         break;
                     }
                 }
@@ -273,7 +290,7 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
         let index_to_loc = header.index_to_loc_format as u32;
 
         let first_ascci_index = get_index(&cmap, b'a');
-        let padding_metrics = get_padding_metrics(&mut reader, num_of_long_h_metrics, horizontal_metrics_table_offset, first_ascci_index, scale);
+        let padding_metrics = get_padding_metrics(&mut reader, num_of_long_h_metrics, horizontal_metrics_table_offset, first_ascci_index);
         let x_ratio = padding_metrics[0] as f32 / line_height as f32;
 
         let (glyphs_per_row, line_count) = {
@@ -340,10 +357,8 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
             modify_texture(
                 &mut texture,
                 texture_width,
-                metrics[i].width,
-                line_height,
-                &glyph.contour_ends,
-                &glyph.points,
+                glyph,
+                scale,
                 [(metrics[i].x_offset + glyph.left_bearing) as u32, (metrics[i].y_offset + bottom_padding) as u32]
             );
         }
@@ -369,19 +384,19 @@ fn goto_glyph_offset(reader: &mut BufReader<std::fs::File>, index_to_loc: u32, l
     reader.seek(std::io::SeekFrom::Start((offset + glyph_table_offset) as u64)).unwrap();
 }
 
-fn get_padding_metrics(reader: &mut BufReader<std::fs::File>, long_h_metrics_count: u32, hhea_table_offset: u32, index: u32, scale: f32) -> [u32; 2] {
+fn get_padding_metrics(reader: &mut BufReader<std::fs::File>, long_h_metrics_count: u32, hhea_table_offset: u32, index: u32) -> [u32; 2] {
     if index < long_h_metrics_count {
         reader.seek(std::io::SeekFrom::Start((hhea_table_offset + 4 * index) as u64)).unwrap();
-        let advance = read(reader, 2).unwrap() as f32;
-        let left_bearing = read(reader, 2).unwrap() as f32;
-        [(advance * scale) as u32, (left_bearing * scale) as u32]
+        let advance = read(reader, 2).unwrap();
+        let left_bearing = read(reader, 2).unwrap();
+        [advance, left_bearing]
     } else {
         reader.seek(std::io::SeekFrom::Start(hhea_table_offset as u64 + 4 * (long_h_metrics_count - 1) as u64)).unwrap();
-        let advance = read(reader, 2).unwrap() as f32;
+        let advance = read(reader, 2).unwrap();
         reader.seek(std::io::SeekFrom::Current(2)).unwrap();
         reader.seek(std::io::SeekFrom::Current(2 * (index - long_h_metrics_count) as i64)).unwrap();
-        let left_bearing = read(reader, 2).unwrap() as f32;
-        [(advance * scale) as u32, (left_bearing * scale) as u32]
+        let left_bearing = read(reader, 2).unwrap();
+        [advance, left_bearing]
     }
 }
 
@@ -395,7 +410,7 @@ fn new_glyph(
     code_point: u32,
     scale: f32,
 ) -> Glyph {
-    let padding_metrics = get_padding_metrics(reader, long_h_metrics_count, hhea_table_offset, code_point, scale);
+    let padding_metrics = get_padding_metrics(reader, long_h_metrics_count, hhea_table_offset, code_point);
 
     goto_glyph_offset(reader, index_to_loc, location_table_offset, code_point, glyph_table_offset);
     let number_of_contours = read(reader, 2).unwrap() as i16;
@@ -411,9 +426,13 @@ fn new_glyph(
         let mut flag = MORE_COMPONENTS;
 
         let mut simple_glyph = Glyph {
-            contour_ends: Vec::new(),
-            points: Vec::new(),
-            boundary: boundary.clone(),
+            contours: Vec::new(),
+            boundary: Box {
+                x_min: boundary.x_min,
+                y_min: boundary.y_min,
+                x_max: boundary.x_max,
+                y_max: boundary.y_max,
+            },
             advance: padding_metrics[0],
             left_bearing: padding_metrics[1],
         };
@@ -430,26 +449,22 @@ fn new_glyph(
             reader.seek(std::io::SeekFrom::Current(8)).unwrap();
 
             if number_of_contours > 0 {
-                let offset_quad = if flag & USE_MY_METRICS != 0 {
+                let center_offset = if flag & USE_MY_METRICS != 0 {
                     [0, 0]
                 } else {
-                    [(matrix[4] as f32 * scale) as i16, (matrix[5] as f32 * scale) as i16]
+                    [matrix[4], matrix[5]]
                 };
 
-                let mut glyph = read_simple_glyph(
+                let glyph = read_simple_glyph(
                     reader,
                     number_of_contours,
                     &boundary,
-                    [matrix[0] as f32 * scale, matrix[1] as f32 * scale, matrix[2] as f32 * scale, matrix[3] as f32 * scale],
-                    offset_quad,
+                    scale,
+                    // [matrix[0] as f32 * scale, matrix[1] as f32 * scale, matrix[2] as f32 * scale, matrix[3] as f32 * scale],
+                    center_offset,
                 ).unwrap();
 
-                for i in 0..glyph.contour_ends.len() {
-                    glyph.contour_ends[i] += simple_glyph.points.len() as u16;
-                }
-
-                simple_glyph.contour_ends.extend_from_slice(&glyph.contour_ends);
-                simple_glyph.points.extend_from_slice(&glyph.points);
+                simple_glyph.contours.extend_from_slice(&glyph.contours);
             }
 
             reader.seek(std::io::SeekFrom::Start(pos)).unwrap();
@@ -461,7 +476,8 @@ fn new_glyph(
             reader,
             number_of_contours,
             &boundary,
-            [scale, 0.0, 0.0, scale],
+            scale,
+            // [scale, 0.0, 0.0, scale],
             [0, 0],
         ).unwrap();
 
@@ -483,7 +499,8 @@ fn read_simple_glyph(
     reader: &mut BufReader<std::fs::File>,
     number_of_contours: i16,
     boundary: &Box,
-    factor_matrix: [f32; 4],
+    scale: f32,
+    // factor_matrix: [f32; 4],
     center_offset: [i16; 2],
 ) -> Result<Glyph, ParseError> {
     let mut contour_ends: Vec<u16> = Vec::with_capacity(number_of_contours as usize);
@@ -495,6 +512,7 @@ fn read_simple_glyph(
     let contour_max: u16 = contour_ends[contour_ends.len() - 1] + 1;
 
     let offset = read(reader, 2)?;
+    println!("length of instructions: {}", offset);
     reader.seek(std::io::SeekFrom::Current(offset as i64)).unwrap();
 
     let mut flags: Vec<u8> = Vec::with_capacity(contour_max as usize);
@@ -556,13 +574,68 @@ fn read_simple_glyph(
             y_value += read(reader, 2).unwrap() as i16;
         }
 
-        points[i].y = ((y_value - boundary.y_min) as f32 * factor_matrix[3] + points[i].x as f32 * factor_matrix[1]) as i16 + center_offset[1];
-        points[i].x = ((points[i].x - boundary.x_min) as f32 * factor_matrix[0] + points[i].y as f32 * factor_matrix[2]) as i16 + center_offset[0];
+        points[i].y = ((y_value - boundary.y_min) as f32 + points[i].x as f32) as i16 + center_offset[1];
+        points[i].x = ((points[i].x - boundary.x_min) as f32 + points[i].y as f32) as i16 + center_offset[0];
+    }
+
+    let mut control_points: [[u32; 2]; 10] = [[0; 2]; 10];
+    let mut contour_start: u8 = 0;
+    let mut contours: Vec<Contour> = Vec::with_capacity(contour_ends.len());
+
+    for contour_end in contour_ends.iter() {
+        let mut lines: Vec<ContourLine> = Vec::with_capacity(points.len());
+
+        for i in contour_start..*contour_end as u8 + 1 {
+            if !points[i as usize].on_curve {
+                continue;
+            }
+
+            let mut index_of_next = if i == *contour_end as u8 {
+                contour_start
+            } else {
+                i + 1
+            };
+
+            let mut control_points_count: usize = 0;
+            while !points[index_of_next as usize].on_curve {
+                control_points[control_points_count] = [
+                    points[index_of_next as usize].x as u32,
+                    points[index_of_next as usize].y as u32,
+                ];
+
+                control_points_count += 1;
+
+                if index_of_next >= *contour_end as u8 {
+                    index_of_next = contour_start;
+                } else {
+                    index_of_next += 1;
+                }
+            }
+
+            let line = ContourLine {
+                start: [points[i as usize].x as u32, points[i as usize].y as u32],
+                end: [points[index_of_next as usize].x as u32, points[index_of_next as usize].y as u32],
+            };
+
+            if control_points_count == 0 {
+                lines.push(line);
+            } else {
+                extend_lines_from_bezier_curve(&line, &control_points[0..control_points_count], &mut lines);
+            }
+        }
+
+        let contour = Contour {
+            winding: contour_winding(&lines),
+            lines,
+        };
+        println!("found winding: {:?}", contour.winding);
+        contours.push(contour);
+
+        contour_start = *contour_end as u8 + 1;
     }
 
     Ok(Glyph {
-        contour_ends,
-        points,
+        contours,
         boundary: Box {
             x_min: boundary.x_min,
             y_min: boundary.y_min,
@@ -574,17 +647,14 @@ fn read_simple_glyph(
     })
 }
 
-const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001; // 0
-const ARGS_ARE_XY_VALUES: u16 = 0x0002; // 1
-// const ROUND_XY_TO_GRID: u16 = 0x0004; // 2
-const WE_HAVE_A_SCALE: u16 = 0x0008; // 3
-// const RESERVED: u16 = 0x0010; // 4
-const MORE_COMPONENTS: u16 = 0x0020; // 5
-const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040; // 6
-const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080; // 7
-const WE_HAVE_INSTRUCTIONS: u16 = 0x0100; // 8
-const USE_MY_METRICS: u16 = 0x0200; // 9
-// const OVERLAP_COMPONENT: u16 = 0x0400; // 10
+const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
+const ARGS_ARE_XY_VALUES: u16 = 0x0002;
+const WE_HAVE_A_SCALE: u16 = 0x0008;
+const MORE_COMPONENTS: u16 = 0x0020;
+const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
+const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
+const USE_MY_METRICS: u16 = 0x0200;
 
 fn read_compound_glyph(
     reader: &mut BufReader<std::fs::File>,
@@ -625,309 +695,281 @@ fn read_compound_glyph(
 }
 
 fn modify_texture(
-    texture: &mut Vec<u8>,
-    texture_width: u32,
-    width: u32,
-    height: u32,
-    contour_ends: &[u16],
-    points: &[Point],
+    bitmap: &mut Vec<u8>,
+    bitmap_width: u32,
+    glyph: &Glyph,
+    factor: f32,
     quad_offset: [u32; 2],
 ) {
-    let mut out_points: [[u32; 2]; 10] = [[0; 2]; 10];
-    let mut contour_start: u8 = 0;
-    let mut first_line: [u32; 4] = [0; 4];
-    let mut contours_inner_points: Vec<[usize; 2]> = Vec::with_capacity(contour_ends.len());
+    // for contour in glyph.contours.iter() {
+    //     for line in contour.lines.iter() {
+    //         draw_line(line, bitmap_width as u32, bitmap, quad_offset);
+    //     }
+    // }
 
-    for contour_end in contour_ends.iter() {
-        let mut points_first_line: [[u32; 2]; 10] = [[0; 2]; 10];
-        let mut points_first_line_count: usize = 0;
-        let mut first_point_flag = false;
-        let mut delta_y: i32 = 0;
-        let mut delta_x: i32 = 0;
-        let mut clock_wise_sum: u32 = 0;
-        let mut counter_clock_wise_sum: u32 = 0;
+    // let mut points_to_fill: Vec<[usize; 2]> = Vec::with_capacity((width * height) as usize);
+    // for point in contours_inner_points.iter() {
+    //     points_to_fill.clear();
+    //     let mut last: usize = 0;
 
-        let mut py = 0;
-        let mut px = 0;
+    //     points_to_fill.push([point[0], point[1]]);
+    //     bitmap[point[0] + point[1]] = 255;
 
-        for i in contour_start..*contour_end as u8 + 1 {
-            if !points[i as usize].on_curve {
-                continue;
-            }
+    //     loop {
+    //         let right = [points_to_fill[last][0] + 1, points_to_fill[last][1]];
+    //         if bitmap[right[0] + right[1]] == 0 {
+    //             points_to_fill.push(right);
+    //             bitmap[right[0] + right[1]] = 255;
+    //         }
 
-            let mut index_of_next = if i == *contour_end as u8 {
-                contour_start
-            } else {
-                i + 1
-            };
+    //         let left = [points_to_fill[last][0] - 1, points_to_fill[last][1]];
+    //         if bitmap[left[0] + left[1]] == 0 {
+    //             points_to_fill.push(left);
+    //             bitmap[left[0] + left[1]] = 255;
+    //         }
 
-            let mut out_points_count: usize = 0;
-            while !points[index_of_next as usize].on_curve {
-                out_points[out_points_count] = [
-                    points[index_of_next as usize].x as u32 + quad_offset[0],
-                    points[index_of_next as usize].y as u32 + quad_offset[1],
-                ];
+    //         let down = [points_to_fill[last][0], points_to_fill[last][1] + bitmap_width as usize];
+    //         if bitmap[down[0] + down[1]] == 0 {
+    //             points_to_fill.push(down);
+    //             bitmap[down[0] + down[1]] = 255;
+    //         }
 
-                out_points_count += 1;
+    //         let up = [points_to_fill[last][0], points_to_fill[last][1] - bitmap_width as usize];
+    //         if bitmap[up[0] + up[1]] == 0 {
+    //             points_to_fill.push(up);
+    //             bitmap[up[0] + up[1]] = 255;
+    //         }
 
-                if index_of_next >= *contour_end as u8 {
-                    index_of_next = contour_start;
-                } else {
-                    index_of_next += 1;
-                }
-            }
-            let x0: u32 = points[i as usize].x as u32 + quad_offset[0];
-            let y0: u32 = points[i as usize].y as u32 + quad_offset[1];
+    //         last += 1;
 
-            let x1: u32 = points[index_of_next as usize].x as u32 + quad_offset[0];
-            let y1: u32 = points[index_of_next as usize].y as u32 + quad_offset[1];
-
-            if out_points_count == 0 {
-                draw_line([x0, y0], [x1, y1], texture_width as u32, texture);
-            } else {
-                let mut previous_x: u32 = x0;
-                let mut previous_y: u32 = y0;
-                let mut coeficients: [[u32; 2]; 12] = [[0; 2]; 12];
-
-                if !first_point_flag {
-                    points_first_line[0] = [x0, y0];
-                    points_first_line_count = 1;
-                }
-
-                coeficients[0] = [x0, y0];
-                coeficients[1..out_points_count as usize + 1].copy_from_slice(&out_points[0..out_points_count as usize]);
-                coeficients[out_points_count + 1] = [x1, y1];
-
-                let len = out_points_count + 2 - 1;
-
-                for iter in 1..INTERPOLATIONS + 1 {
-                    let t: f32 = iter as f32 / INTERPOLATIONS as f32;
-
-                    let mut ptx: f32 = 0.0;
-                    let mut pty: f32 = 0.0;
-
-                    for index in 0..len + 1 {
-                        let bin: f32 = factorial(len) as f32 / (factorial(index) * factorial(len - index)) as f32;
-                        let tm: f32 = pow(1.0 - t, (len - index) as f32);
-                        let tt: f32 = pow(t, index as f32);
-
-                        ptx += bin * tm * tt * coeficients[index][0] as f32;
-                        pty += bin * tm * tt * coeficients[index][1] as f32;
-                    }
-
-                    let ptx = ptx.round() as u32;
-                    let pty = pty.round() as u32;
-
-                    if !first_point_flag {
-                        points_first_line[points_first_line_count] = [ptx, pty];
-                        points_first_line_count += 1;
-                    }
-
-                    draw_line([previous_x, previous_y], [ptx, pty], texture_width as u32, texture);
-
-                    previous_x = ptx;
-                    previous_y = pty;
-                }
-            }
-
-            if !first_point_flag {
-                first_line = [x0, y0, x1, y1];
-
-                delta_x = points[index_of_next as usize].x as i32 - points[i as usize].x as i32;
-                delta_y = points[index_of_next as usize].y as i32 - points[i as usize].y as i32;
-
-                let y_mean = delta_y / 2;
-                let x_mean = delta_x / 2;
-
-                py = points[i as usize].y + y_mean as i16;
-                px = points[i as usize].x + x_mean as i16;
-
-                if y_mean != 0 {
-                    first_point_flag = true;
-                }
-            } else {
-                while py == points[index_of_next as usize].y {
-                    index_of_next = if index_of_next == *contour_end as u8 {
-                        contour_start
-                    } else {
-                        index_of_next + 1
-                    };
-
-                    while !points[index_of_next as usize].on_curve {
-                        if index_of_next >= *contour_end as u8 {
-                            index_of_next = contour_start;
-                        } else {
-                            index_of_next += 1;
-                        }
-                    }
-                }
-
-                if (py < points[index_of_next as usize].y && py > points[i as usize].y)
-                    || (py > points[index_of_next as usize].y && py < points[i as usize].y) {
-                    let dx = points[index_of_next as usize].x as i32 - points[i as usize].x as i32;
-                    let dy = points[index_of_next as usize].y as i32 - points[i as usize].y as i32;
-
-                    if dy != 0 {
-                        let dh: f32 = py as f32 - points[i as usize].y as f32;
-                        let c = dh / dy as f32;
-                        let x = ((dx as f32 * c) + points[i as usize].x as f32) as i16;
-
-                        if delta_y > 0 {
-                            if x >= px {
-                                clock_wise_sum += 1;
-                            } else {
-                                counter_clock_wise_sum += 1;
-                            }
-                        } else if delta_y < 0 {
-                            if x > px {
-                                counter_clock_wise_sum += 1;
-                            } else {
-                                clock_wise_sum += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if clock_wise_sum % 2 == 1 && counter_clock_wise_sum % 2 == 0 {
-            let uy = if delta_x == 0 {
-                0
-            } else if (delta_y / delta_x).abs() <= 2 {
-                if delta_x > 0 {
-                    - 1
-                } else {
-                    1
-                }
-            } else {
-                0
-            };
-
-            let ux: i32 = if delta_y > 0 {
-                1
-            } else {
-                - 1
-            };
-
-            let mut xm = (first_line[2] + first_line[0])/ 2;
-            let ym = (first_line[3] + first_line[1])/ 2;
-
-            if 0 < points_first_line_count {
-                for outsider in 0..points_first_line_count - 1 {
-                    if ym <= points_first_line[outsider][1] && ym >= points_first_line[outsider + 1][1]
-                        || ym >= points_first_line[outsider][1] && ym <= points_first_line[outsider + 1][1] {
-                        let dx = points_first_line[outsider + 1][0] as i32 - points_first_line[outsider][0] as i32;
-                        let dy = points_first_line[outsider + 1][1] as i32 - points_first_line[outsider][1] as i32;
-
-                        if dy != 0 {
-                            let dh: f32 = ym as f32 - points_first_line[outsider][1] as f32;
-                            let c = dh / dy as f32;
-                            let x = ((dx as f32 * c) + points_first_line[outsider][0] as f32) as u32;
-                            xm = x;
-                        } else {
-                            xm = points_first_line[outsider][0]
-                        }
-
-                        break;
-                    }
-                }
-            }
-
-            let mut y_pos = (ym as i32 + uy) as usize * texture_width as usize;
-
-            while texture[(xm as i32 + ux) as usize + y_pos as usize] != 0 {
-                xm = (xm as i32 + ux) as u32;
-                y_pos = (y_pos as i32 + uy * texture_width as i32) as usize;
-            }
-
-            contours_inner_points.push([(xm as i32 + ux) as usize, y_pos as usize]);
-
-        } else if clock_wise_sum % 2 == 0 && counter_clock_wise_sum % 2 == 1 {
-        } else {
-            println!("failed to determine the clock orientation with: {} {}", clock_wise_sum, counter_clock_wise_sum);
-            return;
-        }
-
-        contour_start = *contour_end as u8 + 1;
-    }
-
-    for point in contours_inner_points.iter() {
-        let mut points_to_fill: Vec<[usize; 2]> = Vec::with_capacity((width * height) as usize);
-        let mut last: usize = 0;
-
-        points_to_fill.push(*point);
-        texture[point[0] + point[1]] = 255;
-
-        loop {
-            let right = [points_to_fill[last][0] + 1, points_to_fill[last][1]];
-            if texture[right[0] + right[1]] == 0 {
-                points_to_fill.push(right);
-                texture[right[0] + right[1]] = 255;
-            }
-
-            let left = [points_to_fill[last][0] - 1, points_to_fill[last][1]];
-            if texture[left[0] + left[1]] == 0 {
-                points_to_fill.push(left);
-                texture[left[0] + left[1]] = 255;
-            }
-
-            let down = [points_to_fill[last][0], points_to_fill[last][1] + texture_width as usize];
-            if texture[down[0] + down[1]] == 0 {
-                points_to_fill.push(down);
-                texture[down[0] + down[1]] = 255;
-            }
-
-            let up = [points_to_fill[last][0], points_to_fill[last][1] - texture_width as usize];
-            if texture[up[0] + up[1]] == 0 {
-                points_to_fill.push(up);
-                texture[up[0] + up[1]] = 255;
-            }
-
-            last += 1;
-
-            if last >= points_to_fill.len() {
-                break;
-            }
-        }
-    }
+    //         if last >= points_to_fill.len() {
+    //             break;
+    //         }
+    //     }
+    // }
 }
 
-fn pow(base: f32, expoent: f32) -> f32 {
-    if expoent < 0.05 {
+#[inline(always)]
+fn pow(base: f32, expoent: u32) -> f32 {
+    if expoent == 0 {
         1.0
     } else {
-        base.powf(expoent)
+        base.powf(expoent as f32)
     }
 }
 
-fn factorial(n: usize) -> u32 {
+#[inline(always)]
+fn factorial(n: u32) -> u32 {
     if n <= 1 {
         1
     } else {
-        n as u32 * factorial(n - 1)
+        n * factorial(n - 1)
     }
 }
 
-fn draw_line(start: [u32; 2], end: [u32; 2], width: u32, texture: &mut [u8]) {
-    let first_x = std::cmp::min(start[0], end[0]);
-    let first_y = std::cmp::min(start[1], end[1]);
+fn vec_len(vec: [i32; 2]) -> f32 {
+    let len = vec[0] * vec[0] + vec[1] * vec[1];
+    (len as f32).sqrt()
+}
 
-    let last_x = start[0] + end[0] - first_x;
-    let last_y = start[1] + end[1] - first_y;
+const PI: f32 = std::f32::consts::PI;
 
-    let iter_max = std::cmp::max(last_x - first_x, last_y - first_y);
+fn find_theta(cos: i32, sin: f32) -> f32 {
+    let theta = sin.abs().asin();
+
+    if theta.is_nan() {
+        PI / 2.0
+    } else if cos < 0 {
+        PI - theta
+    } else {
+        theta
+    }
+}
+
+fn contour_winding(lines: &[ContourLine]) -> Winding {
+    let first_line = &lines[0];
+
+    let vec_line: [i32; 2] = [
+        first_line.end[0] as i32 - first_line.start[0] as i32,
+        first_line.end[1] as i32 - first_line.start[1] as i32,
+    ];
+
+    let mid_point_first_line = [
+        ((first_line.start[0] + first_line.end[0]) as f32 / 2.0).round() as u32,
+        ((first_line.start[1] + first_line.end[1]) as f32 / 2.0).round() as u32
+    ];
+
+    let right_vec_line: [i32; 2] = [
+        vec_line[1],
+        - vec_line[0],
+    ];
+
+    let right_len = vec_len(right_vec_line);
+
+    let mut cross_end_of_line: Option<i32> = None;
+    let mut cross_count = 0;
+    for line in lines[1..].iter() {
+        let from_middle_to_start = [line.start[0] as i32 - mid_point_first_line[0] as i32, line.start[1] as i32 - mid_point_first_line[1] as i32, ];
+        let from_middle_to_end = [line.end[0] as i32 - mid_point_first_line[0] as i32, line.end[1] as i32 - mid_point_first_line[1] as i32, ];
+
+        let start_cos_theta = right_vec_line[0] * from_middle_to_start[0] + right_vec_line[1] * from_middle_to_start[1];
+        let end_cos_theta = right_vec_line[0] * from_middle_to_end[0] + right_vec_line[1] * from_middle_to_end[1];
+
+        let start_sin_theta = vec_line[0] * from_middle_to_start[0] + vec_line[1] * from_middle_to_start[1];
+        let end_sin_theta = vec_line[0] * from_middle_to_end[0] + vec_line[1] * from_middle_to_end[1];
+
+        if start_cos_theta <= 0 || end_cos_theta <= 0 {
+            let sin_theta_start = start_sin_theta as f32 / (right_len * vec_len(from_middle_to_start)) as f32;
+            let start_theta = find_theta(start_cos_theta, sin_theta_start);
+
+            let sin_theta_end = end_sin_theta as f32 / (right_len * vec_len(from_middle_to_end)) as f32;
+            let end_theta = find_theta(end_cos_theta, sin_theta_end);
+
+            if start_theta + end_theta >= PI {
+                continue;
+            }
+        }
+
+        if end_sin_theta == 0 || start_sin_theta == 0 {
+            let current_line_vec = [
+                line.end[0] as i32 - line.start[0] as i32,
+                line.end[1] as i32 - line.start[1] as i32,
+            ];
+
+            let current_line_right_vec = [
+                current_line_vec[1],
+                - current_line_vec[0],
+            ];
+
+            let current_line_cos = current_line_right_vec[0] * from_middle_to_end[0] + current_line_right_vec[1] * from_middle_to_end[1];
+
+            if let Some(cos) = cross_end_of_line {
+                if current_line_cos.signum() + cos.signum() != 0 {
+                    cross_count += 1;
+                }
+
+                cross_end_of_line = None;
+            } else {
+                cross_end_of_line = Some(current_line_cos);
+            }
+
+        } else if start_sin_theta.signum() + end_sin_theta.signum() == 0 {
+            cross_count += 1;
+        }
+
+        // if let None = point_inside {
+        //     if end_sin_theta != 0 || start_sin_theta != 0 {
+        //         let current_line_vec = [
+        //             line.end[0] as i32 - line.start[0] as i32,
+        //             line.end[1] as i32 - line.start[1] as i32,
+        //         ];
+
+        //         if vec_len(current_line_vec) < 2.0 {
+        //             continue;
+        //         }
+
+        //         let current_line_right_vec = [
+        //             current_line_vec[1],
+        //             - current_line_vec[0],
+        //         ];
+
+        //         let start = [
+        //             ((line.start[0] + line.end[0]) as f32 / 2.0).round() as u32,
+        //             ((line.start[1] + line.end[1]) as f32 / 2.0).round() as u32
+        //         ];
+
+        //         let len = vec_len(current_line_right_vec);
+        //         let xm = current_line_right_vec[0] as f32 / len;
+        //         let ym = current_line_right_vec[1] as f32 / len;
+
+        //         let mut i: f32 = 0.0;
+
+        //         let mut point = [start[0] as usize, start[1] as usize * bitmap_width];
+        //         while bitmap[point[0] + point[1]] != 0 {
+        //             i += 1.0;
+        //             point = [(start[0] as f32 + i * xm) as usize, (start[1] as f32 + i * ym) as usize * bitmap_width];
+        //         }
+
+        //         point_inside = Some(point);
+        //     }
+        // }
+    }
+
+
+    let winding = if cross_count % 2 == 0 {
+        Winding::CounterClockWise
+    } else {
+        Winding::ClockWise
+    };
+
+    winding
+}
+
+#[inline(always)]
+fn extend_lines_from_bezier_curve(line: &ContourLine, control_points: &[[u32; 2]], lines: &mut Vec<ContourLine>) {
+    let mut previous_x: u32 = line.start[0];
+    let mut previous_y: u32 = line.start[1];
+    let mut coeficients: [[u32; 2]; 12] = [[0; 2]; 12];
+
+    let len = control_points.len();
+
+    coeficients[0] = [previous_x, previous_y];
+    coeficients[1..len as usize + 1].copy_from_slice(&control_points[0..len]);
+    coeficients[len + 1] = [line.end[0], line.end[1]];
+
+    let len = len as u32 + 2 - 1;
+
+    let interpolations_f32 = INTERPOLATIONS as f32;
+
+    for iter in 1..INTERPOLATIONS + 1 {
+        let t: f32 = iter as f32 / interpolations_f32;
+
+        let mut ptx: f32 = 0.0;
+        let mut pty: f32 = 0.0;
+
+        for index in 0..len + 1 {
+            let bin: f32 = factorial(len) as f32 / (factorial(index) * factorial(len - index)) as f32;
+            let tm: f32 = pow(1.0 - t, len - index);
+            let tt: f32 = pow(t, index);
+
+            ptx += bin * tm * tt * coeficients[index as usize][0] as f32;
+            pty += bin * tm * tt * coeficients[index as usize][1] as f32;
+        }
+
+        let ptx = ptx.round() as u32;
+        let pty = pty.round() as u32;
+
+        lines.push(ContourLine {
+            start: [previous_x, previous_y],
+            end: [ptx, pty],
+        });
+
+        previous_x = ptx;
+        previous_y = pty;
+    }
+}
+
+#[inline(always)]
+fn draw_line(line: &ContourLine, width: u32, bitmap: &mut [u8], quad_offset: [u32; 2]) {
+    let first_x = std::cmp::min(line.start[0], line.end[0]);
+    let first_y = std::cmp::min(line.start[1], line.end[1]);
+
+    let last_x = line.start[0] + line.end[0] - first_x;
+    let last_y = line.start[1] + line.end[1] - first_y;
+
+    let iter_max = std::cmp::max(last_x - first_x, last_y - first_y) * 2;
 
     if 0 == iter_max {
         return;
     }
 
-    let x_m: f32 = (end[0] as f32 - start[0] as f32) / iter_max as f32;
-    let y_m: f32 = (end[1] as f32 - start[1] as f32) / iter_max as f32;
+    let x_m: f32 = (line.end[0] as f32 - line.start[0] as f32) / iter_max as f32;
+    let y_m: f32 = (line.end[1] as f32 - line.start[1] as f32) / iter_max as f32;
 
     for i in 0..iter_max {
-        let x: u32 = (start[0] as f32 + i as f32 * x_m).round() as u32;
-        let y: u32 = (start[1] as f32 + i as f32 * y_m).round() as u32;
+        let x: u32 = (line.start[0] as f32 + i as f32 * x_m).round() as u32;
+        let y: u32 = (line.start[1] as f32 + i as f32 * y_m).round() as u32;
 
-        texture[(x + y * width) as usize] = 255;
+        bitmap[(x + quad_offset[0] + (quad_offset[1] + y) * width) as usize] = 255;
     }
 }
