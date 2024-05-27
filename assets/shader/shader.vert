@@ -21,7 +21,7 @@ layout(set = 0, binding = 0) uniform UniformGlobalObject {
 
 void main() {
   vec2 p = vertices[gl_VertexIndex].xy + instance.position;
-  vec2 vertex_position = ugo.scale * vec2(p.x * ugo.ratio * ugo.x_ratio, p.y) + vec2(ugo.x_offset, ugo.y_offset);
+  vec2 vertex_position = vec2(p.x * ugo.ratio * ugo.x_ratio, p.y) + vec2(ugo.x_offset, ugo.y_offset);
 
   gl_Position = vec4(vertex_position, 0.0, 1.0);
 

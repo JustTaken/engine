@@ -232,19 +232,8 @@ fn loader_function(library: *const std::ffi::c_void) -> vulkan::PFN_vkGetInstanc
     }
 }
 
-fn load_library(library_name: &str) -> Result<*const std::ffi::c_void, LoadError>  {
-    let vk_name = std::ffi::CString::new(library_name).unwrap();
-    let library = unsafe { dl::dlopen(vk_name.as_ptr(), 1) };
-
-    if library.is_null() {
-        Err(LoadError::NoLibVulkan)
-    } else {
-        Ok(library)
-    }
-}
-
 pub fn instance(extensions: &[*const std::ffi::c_char]) -> Result<Instance, LoadError> {
-    let library = load_library("libvulkan.so")?;
+    let library = dl::load_library("libvulkan.so").map_err(|_| LoadError::NoLibVulkan)?;
     let layer_name: *const std::ffi::c_char = b"VK_LAYER_KHRONOS_validation\0".as_ptr().cast();
     let api_name: *const std::ffi::c_char = b"Hello triangle\0".as_ptr().cast();
     let version = ((1 as u32) << 22) | ((3 as u32) << 12);
@@ -1576,7 +1565,7 @@ pub fn swapchain(
         font.width as u32,
         font.height as u32
     )?;
-    copy_buffer_to_image(device, command_pool, texture_image.handle, &font.texture, font.width as u32, font.height as u32)?;
+    copy_buffer_to_image(device, command_pool, texture_image.handle, &font.texture_atlas, font.width as u32, font.height as u32)?;
 
     let texture_sampler = create_sampler(device, vulkan::SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
     let texture_descriptor_set = allocate_descriptor_set(device, graphics_pipeline.global_descriptor_pool, graphics_pipeline.texture_descriptor_set_layout);
@@ -1953,26 +1942,26 @@ fn record_command_buffer(
         pInheritanceInfo: &inheritance_info as *const vulkan::CommandBufferInheritanceInfo,
     };
 
-    if !command_buffer.is_text_updated {
-        unsafe { (device.vkBeginCommandBuffer)(command_buffer.secondary[0], &secondary_command_buffer_begin_info as *const vulkan::CommandBufferBeginInfo) };
-        unsafe { (device.vkCmdSetViewport)(command_buffer.secondary[0], 0, 1, &viewport as *const vulkan::Viewport) };
-        unsafe { (device.vkCmdSetScissor)(command_buffer.secondary[0], 0, 1, &scissor as *const vulkan::Rect2D) };
+    // if !command_buffer.is_text_updated {
+    //     unsafe { (device.vkBeginCommandBuffer)(command_buffer.secondary[0], &secondary_command_buffer_begin_info as *const vulkan::CommandBufferBeginInfo) };
+    //     unsafe { (device.vkCmdSetViewport)(command_buffer.secondary[0], 0, 1, &viewport as *const vulkan::Viewport) };
+    //     unsafe { (device.vkCmdSetScissor)(command_buffer.secondary[0], 0, 1, &scissor as *const vulkan::Rect2D) };
 
-        record_text_secondary_command_buffer(
-            device,
-            command_buffer.secondary[0],
-            vertex_buffer,
-            index_buffer,
-            uniform_descriptor_set,
-            texture_descriptor_set,
-            graphics_pipeline,
-            characters
-        );
+    //     record_text_secondary_command_buffer(
+    //         device,
+    //         command_buffer.secondary[0],
+    //         vertex_buffer,
+    //         index_buffer,
+    //         uniform_descriptor_set,
+    //         texture_descriptor_set,
+    //         graphics_pipeline,
+    //         characters
+    //     );
 
-        unsafe { (device.vkEndCommandBuffer)(command_buffer.secondary[0]) };
+    //     unsafe { (device.vkEndCommandBuffer)(command_buffer.secondary[0]) };
 
-        command_buffer.is_text_updated = true;
-    }
+    //     command_buffer.is_text_updated = true;
+    // }
 
     unsafe { (device.vkBeginCommandBuffer)(command_buffer.secondary[1], &secondary_command_buffer_begin_info as *const vulkan::CommandBufferBeginInfo) };
     unsafe { (device.vkCmdSetViewport)(command_buffer.secondary[1], 0, 1, &viewport as *const vulkan::Viewport) };
@@ -1984,15 +1973,15 @@ fn record_command_buffer(
         cursor_vertex_buffer,
         index_buffer,
         uniform_descriptor_set,
-        cursor_texture_descriptor_set,
-        // texture_descriptor_set,
+        // cursor_texture_descriptor_set,
+        texture_descriptor_set,
         graphics_pipeline,
         cursor,
     );
 
     unsafe { (device.vkEndCommandBuffer)(command_buffer.secondary[1]) };
 
-    unsafe { (device.vkCmdExecuteCommands)(command_buffer.handle, 2, command_buffer.secondary.as_ptr() as *const *mut vulkan::CommandBuffer) };
+    unsafe { (device.vkCmdExecuteCommands)(command_buffer.handle, 1, command_buffer.secondary[1..].as_ptr() as *const *mut vulkan::CommandBuffer) };
     unsafe { (device.vkCmdEndRenderPass)(command_buffer.handle) };
     unsafe { (device.vkEndCommandBuffer)(command_buffer.handle) };
 }

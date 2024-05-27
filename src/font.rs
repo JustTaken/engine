@@ -1,4 +1,6 @@
 use std::io::{ Seek, Read, BufReader};
+use crate::binding::dl;
+use crate::binding::truetype;
 
 const INTERPOLATIONS: u32 = 4;
 
@@ -9,6 +11,8 @@ pub enum ParseError {
     FailToParse,
     WrongMagicNumber,
     InvalidValue,
+    NotMonospaced,
+    LibTrueTypeNotFound,
 }
 
 #[allow(dead_code)]
@@ -26,7 +30,7 @@ pub struct GlyphMetrics {
 }
 
 pub struct TrueTypeFont {
-    pub texture: Vec<u8>,
+    pub texture_atlas: Vec<u8>,
     pub width: u32,
     pub height: u32,
     pub metrics: Vec<GlyphMetrics>,
@@ -45,7 +49,7 @@ struct Box {
 #[derive(Clone)]
 struct Contour {
     lines: Vec<ContourLine>,
-    winding: Winding,
+    clock_wise_winding: bool,
 }
 
 #[derive(Clone)]
@@ -54,16 +58,8 @@ struct ContourLine {
     end: [u32; 2],
 }
 
-#[derive(Debug, Clone)]
-enum Winding {
-    ClockWise,
-    CounterClockWise,
-}
-
 struct Glyph {
     contours: Vec<Contour>,
-    // contour_ends: Vec<u16>,
-    // points: Vec<Point>,
     boundary: Box,
     left_bearing: u32,
     advance: u32,
@@ -71,32 +67,67 @@ struct Glyph {
 
 #[derive(Clone)]
 struct Point {
-    x: i16,
-    y: i16,
+    pos: [i16; 2],
     on_curve: bool,
 }
 
 struct Header {
-    units_pem: u16,
-    index_to_loc_format: u16,
+    units_pem: u32,
+    index_to_loc_format: u32,
     boundary: Box,
 }
+
+struct Info {
+    index_to_loc: u32,
+    loca_offset: u32,
+    glyf_offset: u32,
+    hmtx_offset: u32,
+    h_metrics_count: u32,
+    cvt: Vec<u32>,
+}
+
+enum TableType {
+    Map,
+    Glyph,
+    Header,
+    Location,
+    HorizontalHeader,
+    HorizontalMetrics,
+    ControlValue,
+}
+
+impl Table {
+    fn new(reader: &mut BufReader<std::fs::File>) -> Result<Table, ParseError> {
+        let mut name: [u8; 4] = [0; 4];
+        if 4 != reader.read(&mut name).map_err(|_| ParseError::NoMoreData)? {
+            return Err(ParseError::NoMoreData);
+        }
+
+        Ok(Table {
+            name,
+            checksum: read(reader, 4)?,
+            offset: read(reader, 4)?,
+            length: read(reader, 4)?,
+        })
+    }
+}
+
 
 fn new_header(reader: &mut BufReader<std::fs::File>) -> Result<Header, ParseError> {
     reader.seek(std::io::SeekFrom::Current(12)).map_err(|_| ParseError::WrongSize)?;
     let magic_number = read(reader, 4)?;
     reader.seek(std::io::SeekFrom::Current(2)).map_err(|_| ParseError::WrongSize)?;
-    let units_pem = read(reader, 2)? as u16;
+    let units_pem = read(reader, 2)? as u32;
     reader.seek(std::io::SeekFrom::Current(16)).map_err(|_| ParseError::WrongSize)?;
 
-    let x_min = read(reader, 2).unwrap() as i16;
-    let y_min = read(reader, 2).unwrap() as i16;
-    let x_max = read(reader, 2).unwrap() as i16;
-    let y_max = read(reader, 2).unwrap() as i16;
+    let x_min = read(reader, 2)? as i16;
+    let y_min = read(reader, 2)? as i16;
+    let x_max = read(reader, 2)? as i16;
+    let y_max = read(reader, 2)? as i16;
 
     reader.seek(std::io::SeekFrom::Current(6)).map_err(|_| ParseError::WrongSize)?;
 
-    let index_to_loc_format = read(reader, 2)? as u16;
+    let index_to_loc_format = read(reader, 2)? as u32;
 
     if 0x5f0f3cf5 != magic_number {
         Err(ParseError::WrongMagicNumber)
@@ -145,7 +176,7 @@ fn new_map(reader: &mut BufReader<std::fs::File>) -> Result<Map, ParseError> {
     })
 }
 
-fn get_index(cmap: &Map, code_point: u8) -> u32 {
+fn get_glyph_index(cmap: &Map, code_point: u8) -> u32 {
     let code_point = code_point as u32;
 
     for i in 0..cmap.start_code.len() {
@@ -158,32 +189,6 @@ fn get_index(cmap: &Map, code_point: u8) -> u32 {
     0
 }
 
-enum TableType {
-    Map,
-    Max,
-    Glyph,
-    Header,
-    Location,
-    HorizontalHeader,
-    HorizontalMetrics,
-}
-
-impl Table {
-    fn new(reader: &mut BufReader<std::fs::File>) -> Result<Table, ParseError> {
-        let mut name: [u8; 4] = [0; 4];
-        if 4 != reader.read(&mut name).map_err(|_| ParseError::NoMoreData)? {
-            return Err(ParseError::NoMoreData);
-        }
-
-        Ok(Table {
-            name,
-            checksum: read(reader, 4)?,
-            offset: read(reader, 4)?,
-            length: read(reader, 4)?,
-        })
-    }
-}
-
 fn get_name_type(name: &[u8; 4]) -> Result<TableType, ParseError> {
     match name {
         [b'c', b'm', b'a', b'p'] => Ok(TableType::Map),
@@ -191,20 +196,16 @@ fn get_name_type(name: &[u8; 4]) -> Result<TableType, ParseError> {
         [b'h', b'e', b'a', b'd'] => Ok(TableType::Header),
         [b'h', b'h', b'e', b'a'] => Ok(TableType::HorizontalHeader),
         [b'h', b'm', b't', b'x'] => Ok(TableType::HorizontalMetrics),
+        [b'c', b'v', b't', b' '] => Ok(TableType::ControlValue),
         [b'l', b'o', b'c', b'a'] => Ok(TableType::Location),
-        [b'm', b'a', b'x', b'p'] => Ok(TableType::Max),
         _ => Err(ParseError::FailToParse),
     }
 }
 
 fn read(reader: &mut BufReader<std::fs::File>, len: usize) -> Result<u32, ParseError> {
-    if len > 4 {
-        return Err(ParseError::InvalidValue);
-    }
-
     let mut array: [u8; 4] = [0; 4];
 
-    if len != reader.read(&mut array[..len]).unwrap() {
+    if len != reader.read(&mut array[..len]).map_err(|_| ParseError::NoMoreData)? {
         return Err(ParseError::NoMoreData);
     }
 
@@ -221,19 +222,22 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
     let file = std::fs::File::open(file_path).map_err(|_| ParseError::FailToParse)?;
     let mut reader = BufReader::new(file);
 
+    let mut cmap: Option<Map> = None;
+    let mut header: Option<Header> = None;
+    let mut info = Info {
+        index_to_loc: 0,
+        loca_offset: 0,
+        glyf_offset: 0,
+        hmtx_offset: 0,
+        h_metrics_count: 0,
+        cvt: Vec::with_capacity(10),
+    };
+
     reader.seek(std::io::SeekFrom::Current(4)).unwrap();
     let num_tables = read(&mut reader, 2)?;
 
     reader.seek(std::io::SeekFrom::Current(6)).unwrap();
     let pos = reader.stream_position().unwrap();
-
-    let mut cmap: Option<Map> = None;
-    let mut header: Option<Header> = None;
-
-    let mut location_table_offset: u32 = 0;
-    let mut glyph_table_offset: u32 = 0;
-    let mut horizontal_metrics_table_offset: u32 = 0;
-    let mut num_of_long_h_metrics: u32 = 0;
 
     for i in 0..num_tables {
         reader.seek(std::io::SeekFrom::Start(pos + (i as usize * std::mem::size_of::<Table>()) as u64)).unwrap();
@@ -241,57 +245,63 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
         let table = Table::new(&mut reader)?;
 
         if let Ok(typ) = get_name_type(&table.name) {
-            if let TableType::Map = typ {
-                reader.seek(std::io::SeekFrom::Start(table.offset as u64 + 2)).unwrap();
-                let number_subtables = read(&mut reader, 2)?;
+            match typ {
+                TableType::Map => {
+                    reader.seek(std::io::SeekFrom::Start(table.offset as u64 + 2)).unwrap();
+                    let number_subtables = read(&mut reader, 2)?;
 
-                for k in 0..number_subtables {
-                    reader.seek(std::io::SeekFrom::Start(table.offset as u64 + 8 * k as u64 + 4)).unwrap();
+                    for k in 0..number_subtables {
+                        reader.seek(std::io::SeekFrom::Start(table.offset as u64 + 8 * k as u64 + 4)).unwrap();
 
-                    let id = read(&mut reader, 2)?;
-                    let specific_id = read(&mut reader, 2)?;
-                    let offset = read(&mut reader, 4)?;
+                        let id = read(&mut reader, 2)?;
+                        let specific_id = read(&mut reader, 2)?;
+                        let offset = read(&mut reader, 4)?;
 
-                    if id != 0 && specific_id != 0 && specific_id != 4 && specific_id != 3 {
-                        continue;
+                        if id != 0 && specific_id != 0 && specific_id != 4 && specific_id != 3 {
+                            continue;
+                        }
+
+                        reader.seek(std::io::SeekFrom::Start(table.offset as u64 + offset as u64)).unwrap();
+
+                        if read(&mut reader, 2)? == 12 {
+                            cmap = new_map(&mut reader).ok();
+                            break;
+                        }
                     }
+                },
+                TableType::Header => {
+                    reader.seek(std::io::SeekFrom::Start(table.offset as u64)).unwrap();
+                    header = new_header(&mut reader).ok();
+                },
+                TableType::Location => {
+                    info.loca_offset = table.offset;
+                },
+                TableType::Glyph => {
+                    info.glyf_offset = table.offset;
+                },
+                TableType::HorizontalHeader => {
+                    reader.seek(std::io::SeekFrom::Start(table.offset as u64 + 34)).unwrap();
+                    info.h_metrics_count = read(&mut reader, 2).unwrap();
+                },
+                TableType::HorizontalMetrics => {
+                    info.hmtx_offset = table.offset;
+                },
+                TableType::ControlValue => {
+                    reader.seek(std::io::SeekFrom::Start(table.offset as u64)).unwrap();
 
-                    reader.seek(std::io::SeekFrom::Start(table.offset as u64 + offset as u64)).unwrap();
-
-                    let format = read(&mut reader, 2)?;
-
-                    if format == 12 {
-                        cmap = new_map(&mut reader).ok();
-                        break;
+                    for _ in 0..table.length / 4 {
+                        info.cvt.push(read(&mut reader, 4).unwrap());
                     }
-                }
-            } else if let TableType::Max = typ {
-                reader.seek(std::io::SeekFrom::Start(table.offset as u64 + 4)).unwrap();
-            } else if let TableType::Header = typ {
-                reader.seek(std::io::SeekFrom::Start(table.offset as u64)).unwrap();
-                header = new_header(&mut reader).ok();
-            } else if let TableType::Location = typ {
-                location_table_offset = table.offset;
-            } else if let TableType::Glyph = typ {
-                glyph_table_offset = table.offset;
-            } else if let TableType::HorizontalHeader = typ {
-                reader.seek(std::io::SeekFrom::Start(table.offset as u64 + 34)).unwrap();
-                num_of_long_h_metrics = read(&mut reader, 2).unwrap();
-            } else if let TableType::HorizontalMetrics = typ {
-                horizontal_metrics_table_offset = table.offset;
+                },
             }
         }
     }
 
     if let (Some(cmap), Some(header)) = (cmap, header) {
         let scale = size as f32 / header.units_pem as f32;
-        let line_height = ((header.boundary.y_max - header.boundary.y_min) as f32 * scale) as u32;
+        let line_height = (header.boundary.y_max - header.boundary.y_min) as u32;
 
-        let index_to_loc = header.index_to_loc_format as u32;
-
-        let first_ascci_index = get_index(&cmap, b'a');
-        let padding_metrics = get_padding_metrics(&mut reader, num_of_long_h_metrics, horizontal_metrics_table_offset, first_ascci_index);
-        let x_ratio = padding_metrics[0] as f32 / line_height as f32;
+        info.index_to_loc = header.index_to_loc_format;
 
         let (glyphs_per_row, line_count) = {
             let len = code_points.len() as f32;
@@ -311,15 +321,11 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
 
         let mut i = 0;
         for code_point in code_points.iter() {
-            let index = get_index(&cmap, *code_point);
+            let index = get_glyph_index(&cmap, *code_point);
 
             let glyph = new_glyph(
                 &mut reader,
-                index_to_loc,
-                location_table_offset,
-                glyph_table_offset,
-                horizontal_metrics_table_offset,
-                num_of_long_h_metrics,
+                &info,
                 index,
                 scale,
             );
@@ -348,23 +354,30 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
             glyphs.push(glyph);
         }
 
-        let texture_height = line_count * line_height;
+        let texture_width = (texture_width as f32 * scale) as u32;
+        let texture_height = ((line_count * line_height ) as f32 * scale) as u32;
+
         let mut texture: Vec<u8> = vec![0; (texture_width * texture_height) as usize];
 
         for (i, glyph) in glyphs.iter().enumerate() {
-            let bottom_padding = ((glyph.boundary.y_min - header.boundary.y_min) as f32 * scale) as u32;
+            let bottom_padding = (glyph.boundary.y_min - header.boundary.y_min) as u32;
 
-            modify_texture(
+            add_glyph_to_bitmap(
                 &mut texture,
                 texture_width,
                 glyph,
                 scale,
-                [(metrics[i].x_offset + glyph.left_bearing) as u32, (metrics[i].y_offset + bottom_padding) as u32]
+                [
+                    metrics[i].x_offset + glyph.left_bearing,
+                    metrics[i].y_offset + bottom_padding
+                ]
             );
         }
 
+        let x_ratio = metrics[0].width as f32 / line_height as f32;
+
         Ok(TrueTypeFont {
-            texture,
+            texture_atlas: texture,
             width: texture_width,
             height: texture_height,
             metrics,
@@ -377,42 +390,40 @@ pub fn init(file_path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFon
     }
 }
 
-fn goto_glyph_offset(reader: &mut BufReader<std::fs::File>, index_to_loc: u32, location_table_offset: u32, code_point: u32, glyph_table_offset: u32) {
-    let translate = index_to_loc * 2;
-    reader.seek(std::io::SeekFrom::Start((location_table_offset + code_point * (translate + 2)) as u64)).unwrap();
-    let offset = read(reader, 2 + translate as usize).unwrap() * (((index_to_loc + 1) % 2) + 1);
-    reader.seek(std::io::SeekFrom::Start((offset + glyph_table_offset) as u64)).unwrap();
+fn goto_glyph_offset(reader: &mut BufReader<std::fs::File>, info: &Info, code_point: u32) {
+    let translate = info.index_to_loc * 2;
+    reader.seek(std::io::SeekFrom::Start((info.loca_offset + code_point * (translate + 2)) as u64)).unwrap();
+    let offset = read(reader, 2 + translate as usize).unwrap() * (((info.index_to_loc + 1) % 2) + 1);
+    reader.seek(std::io::SeekFrom::Start((offset + info.glyf_offset) as u64)).unwrap();
 }
 
-fn get_padding_metrics(reader: &mut BufReader<std::fs::File>, long_h_metrics_count: u32, hhea_table_offset: u32, index: u32) -> [u32; 2] {
-    if index < long_h_metrics_count {
-        reader.seek(std::io::SeekFrom::Start((hhea_table_offset + 4 * index) as u64)).unwrap();
+fn get_padding_metrics(reader: &mut BufReader<std::fs::File>, info: &Info, index: u32) -> [u32; 2] {
+    if index < info.h_metrics_count {
+        reader.seek(std::io::SeekFrom::Start((info.hmtx_offset + 4 * index) as u64)).unwrap();
         let advance = read(reader, 2).unwrap();
         let left_bearing = read(reader, 2).unwrap();
+
         [advance, left_bearing]
     } else {
-        reader.seek(std::io::SeekFrom::Start(hhea_table_offset as u64 + 4 * (long_h_metrics_count - 1) as u64)).unwrap();
+        reader.seek(std::io::SeekFrom::Start(info.hmtx_offset as u64 + 4 * (info.h_metrics_count - 1) as u64)).unwrap();
         let advance = read(reader, 2).unwrap();
         reader.seek(std::io::SeekFrom::Current(2)).unwrap();
-        reader.seek(std::io::SeekFrom::Current(2 * (index - long_h_metrics_count) as i64)).unwrap();
+        reader.seek(std::io::SeekFrom::Current(2 * (index - info.h_metrics_count) as i64)).unwrap();
         let left_bearing = read(reader, 2).unwrap();
+
         [advance, left_bearing]
     }
 }
 
 fn new_glyph(
     reader: &mut BufReader<std::fs::File>,
-    index_to_loc: u32,
-    location_table_offset: u32,
-    glyph_table_offset: u32,
-    hhea_table_offset: u32,
-    long_h_metrics_count: u32,
+    info: &Info,
     code_point: u32,
     scale: f32,
 ) -> Glyph {
-    let padding_metrics = get_padding_metrics(reader, long_h_metrics_count, hhea_table_offset, code_point);
+    let padding_metrics = get_padding_metrics(reader, info, code_point);
 
-    goto_glyph_offset(reader, index_to_loc, location_table_offset, code_point, glyph_table_offset);
+    goto_glyph_offset(reader, info, code_point);
     let number_of_contours = read(reader, 2).unwrap() as i16;
 
     let boundary = Box {
@@ -444,7 +455,7 @@ fn new_glyph(
             let matrix = read_compound_glyph(reader, flag);
             let pos = reader.stream_position().unwrap();
 
-            goto_glyph_offset(reader, index_to_loc, location_table_offset, index, glyph_table_offset);
+            goto_glyph_offset(reader, info, index);
             let number_of_contours = read(reader, 2).unwrap() as i16;
             reader.seek(std::io::SeekFrom::Current(8)).unwrap();
 
@@ -459,9 +470,9 @@ fn new_glyph(
                     reader,
                     number_of_contours,
                     &boundary,
-                    scale,
-                    // [matrix[0] as f32 * scale, matrix[1] as f32 * scale, matrix[2] as f32 * scale, matrix[3] as f32 * scale],
                     center_offset,
+                    &info.cvt,
+                    scale,
                 ).unwrap();
 
                 simple_glyph.contours.extend_from_slice(&glyph.contours);
@@ -476,9 +487,9 @@ fn new_glyph(
             reader,
             number_of_contours,
             &boundary,
-            scale,
-            // [scale, 0.0, 0.0, scale],
             [0, 0],
+            &info.cvt,
+            scale,
         ).unwrap();
 
         glyph.left_bearing = padding_metrics[1];
@@ -495,13 +506,149 @@ const REPEAT: u8 = 0x08;
 const X_IS_SAME: u8 = 0x10;
 const Y_IS_SAME: u8 = 0x20;
 
+const RP0: usize = 0;
+const RP1: usize = 1;
+const RP2: usize = 2;
+
+const ZP0: usize = 3;
+const ZP1: usize = 4;
+const ZP2: usize = 5;
+
+struct Stack {
+    handle: [u32; 100],
+    registers: [u32; 6],
+    len: usize,
+}
+
+impl Stack {
+    fn pop(&mut self) -> u32 {
+        self.len -= 1;
+        self.handle[self.len]
+    }
+
+    fn push(&mut self, v: u32) {
+        self.handle[self.len] = v;
+        self.len += 1;
+    }
+}
+
+fn miap(stack: &mut Stack, control_value_table: &[u32], code: u32) {
+    let n = stack.pop();
+    let p = stack.pop();
+    let distance = control_value_table[n as usize] as f32 / 64 as f32;
+
+    let distance = if code & 0x01 != 0 {
+        distance.round() as i16
+    } else {
+        distance as i16
+    };
+}
+
+fn npushb(reader: &mut BufReader<std::fs::File>, stack: &mut Stack) {
+    let n = read(reader, 1).unwrap();
+
+    for _ in 0..n {
+        stack.push(read(reader, 1).unwrap());
+    }
+}
+
+fn pushb(reader: &mut BufReader<std::fs::File>, stack: &mut Stack, code: u32) {
+    let n = code & 0b111;
+    for _ in 0..n + 1 {
+        stack.push(read(reader, 1).unwrap());
+    }
+}
+
+fn pushw(reader: &mut BufReader<std::fs::File>, stack: &mut Stack, code: u32) {
+    let n = code & 0b111;
+
+    for _ in 0..n + 1 {
+        let byte = read(reader, 2).unwrap();
+        stack.push(byte);
+    }
+}
+
+fn mirp(
+    stack: &mut Stack,
+    code: u32,
+    control_value_table: &[u32],
+    points: &[Point],
+) {
+    let n = stack.pop();
+    let p = stack.pop();
+
+    if code & 0b00010000 != 0 {
+        stack.registers[RP0] = p;
+    }
+
+    if code & 0b00001000 != 0 {
+        println!("do not keep distance greater that or equal to minimum distance");
+    } else {
+        println!("keep distance greater than or equal to minimum distance");
+    }
+
+    let distance = if code & 0b00000100 != 0 {
+        println!("do not round the distance and do not look at the control value cut-in");
+        code & 0b00000011
+    } else {
+        println!("round the distance and look at the control cut-in value");
+        control_value_table[n as usize]
+    };
+}
+
+fn svtca(
+    projection_vector_index: &mut usize,
+    freedom_vector_index: &mut usize,
+    code: u32,
+) {
+    if code & 0x01 == 0 {
+        *projection_vector_index = 1;
+        *freedom_vector_index = 1;
+    } else {
+        *projection_vector_index = 0;
+        *freedom_vector_index = 0;
+    }
+}
+
+fn grid_fit(
+    reader: &mut BufReader<std::fs::File>,
+    points: &[Point],
+    control_value_table: &[u32],
+    instructions_length: u32,
+) {
+    let mut freedom_vector_index: usize = 0;
+    let mut projection_vector_index: usize = 0;
+
+    let mut stack = Stack {
+        handle: [0; 100],
+        registers: [0; 6],
+        len: 0,
+    };
+
+    for i in 0..instructions_length {
+        let code = read(reader, 1).unwrap();
+        match code {
+            0x00 | 0x01 => svtca(&mut freedom_vector_index, &mut projection_vector_index, code),
+            0x3E..=0x3F => miap(&mut stack, control_value_table, code),
+            0x40 => npushb(reader, &mut stack),
+            0xB8..=0xBF => pushw(reader, &mut stack, code),
+            0xB0..=0xB7 => pushb(reader, &mut stack, code),
+            // 0xE0..=0xFF => mirp(&mut stack, code, control_value_table, points),
+            a => {
+                println!("function: {:#x}", a);
+                break;
+            }
+        }
+    }
+}
+
 fn read_simple_glyph(
     reader: &mut BufReader<std::fs::File>,
     number_of_contours: i16,
     boundary: &Box,
-    scale: f32,
-    // factor_matrix: [f32; 4],
     center_offset: [i16; 2],
+    control_value_table: &[u32],
+    scale: f32,
 ) -> Result<Glyph, ParseError> {
     let mut contour_ends: Vec<u16> = Vec::with_capacity(number_of_contours as usize);
 
@@ -510,10 +657,10 @@ fn read_simple_glyph(
     }
 
     let contour_max: u16 = contour_ends[contour_ends.len() - 1] + 1;
+    let instructions_length = read(reader, 2)?;
+    let instructions_offset = reader.stream_position().unwrap();
 
-    let offset = read(reader, 2)?;
-    println!("length of instructions: {}", offset);
-    reader.seek(std::io::SeekFrom::Current(offset as i64)).unwrap();
+    reader.seek(std::io::SeekFrom::Current(instructions_length as i64)).unwrap();
 
     let mut flags: Vec<u8> = Vec::with_capacity(contour_max as usize);
     let mut i: u16 = 0;
@@ -552,8 +699,7 @@ fn read_simple_glyph(
         }
 
         points.push(Point {
-            x: x_value,
-            y: 0,
+            pos: [((x_value - boundary.x_min + center_offset[0]) as f32 * scale) as i16, 0],
             on_curve: flags[i] & ON_CURVE != 0,
         });
     }
@@ -574,15 +720,18 @@ fn read_simple_glyph(
             y_value += read(reader, 2).unwrap() as i16;
         }
 
-        points[i].y = ((y_value - boundary.y_min) as f32 + points[i].x as f32) as i16 + center_offset[1];
-        points[i].x = ((points[i].x - boundary.x_min) as f32 + points[i].y as f32) as i16 + center_offset[0];
+        points[i].pos[1] = ((y_value - boundary.y_min + center_offset[1]) as f32 * scale) as i16;
     }
+
+    reader.seek(std::io::SeekFrom::Start(instructions_offset as u64)).unwrap();
+    grid_fit(reader, &mut points, control_value_table, instructions_length);
 
     let mut control_points: [[u32; 2]; 10] = [[0; 2]; 10];
     let mut contour_start: u8 = 0;
     let mut contours: Vec<Contour> = Vec::with_capacity(contour_ends.len());
 
     for contour_end in contour_ends.iter() {
+        let mut contour_winding_sum: i32 = 0;
         let mut lines: Vec<ContourLine> = Vec::with_capacity(points.len());
 
         for i in contour_start..*contour_end as u8 + 1 {
@@ -599,8 +748,8 @@ fn read_simple_glyph(
             let mut control_points_count: usize = 0;
             while !points[index_of_next as usize].on_curve {
                 control_points[control_points_count] = [
-                    points[index_of_next as usize].x as u32,
-                    points[index_of_next as usize].y as u32,
+                    points[index_of_next as usize].pos[0] as u32,
+                    points[index_of_next as usize].pos[1] as u32,
                 ];
 
                 control_points_count += 1;
@@ -613,9 +762,11 @@ fn read_simple_glyph(
             }
 
             let line = ContourLine {
-                start: [points[i as usize].x as u32, points[i as usize].y as u32],
-                end: [points[index_of_next as usize].x as u32, points[index_of_next as usize].y as u32],
+                start: [points[i as usize].pos[0] as u32, points[i as usize].pos[1] as u32],
+                end: [points[index_of_next as usize].pos[0] as u32, points[index_of_next as usize].pos[1] as u32],
             };
+
+            contour_winding_sum += shoelace(&line);
 
             if control_points_count == 0 {
                 lines.push(line);
@@ -625,12 +776,11 @@ fn read_simple_glyph(
         }
 
         let contour = Contour {
-            winding: contour_winding(&lines),
+            clock_wise_winding: contour_winding_sum > 0,
             lines,
         };
-        println!("found winding: {:?}", contour.winding);
-        contours.push(contour);
 
+        contours.push(contour);
         contour_start = *contour_end as u8 + 1;
     }
 
@@ -694,18 +844,19 @@ fn read_compound_glyph(
     matrix
 }
 
-fn modify_texture(
+fn add_glyph_to_bitmap(
     bitmap: &mut Vec<u8>,
     bitmap_width: u32,
     glyph: &Glyph,
-    factor: f32,
+    scale: f32,
     quad_offset: [u32; 2],
 ) {
-    // for contour in glyph.contours.iter() {
-    //     for line in contour.lines.iter() {
-    //         draw_line(line, bitmap_width as u32, bitmap, quad_offset);
-    //     }
-    // }
+    let offset = [(quad_offset[0] as f32 * scale).round() as u32, (quad_offset[1] as f32 * scale).round() as u32];
+    for contour in glyph.contours.iter() {
+        for line in contour.lines.iter() {
+            draw_line(line, bitmap_width, bitmap, offset);
+        }
+    }
 
     // let mut points_to_fill: Vec<[usize; 2]> = Vec::with_capacity((width * height) as usize);
     // for point in contours_inner_points.iter() {
@@ -767,143 +918,130 @@ fn factorial(n: u32) -> u32 {
     }
 }
 
-fn vec_len(vec: [i32; 2]) -> f32 {
-    let len = vec[0] * vec[0] + vec[1] * vec[1];
-    (len as f32).sqrt()
+#[inline(always)]
+fn shoelace(line: &ContourLine) -> i32 {
+    (line.end[0] as i32 - line.start[0] as i32) * (line.start[1] as i32 + line.end[1] as i32)
 }
 
-const PI: f32 = std::f32::consts::PI;
+// #[inline(always)]
+// fn contour_winding(lines: &[ContourLine]) -> Winding {
+//     let first_line = &lines[0];
 
-fn find_theta(cos: i32, sin: f32) -> f32 {
-    let theta = sin.abs().asin();
+//     let vec_line: [i32; 2] = [
+//         first_line.end[0] as i32 - first_line.start[0] as i32,
+//         first_line.end[1] as i32 - first_line.start[1] as i32,
+//     ];
 
-    if theta.is_nan() {
-        PI / 2.0
-    } else if cos < 0 {
-        PI - theta
-    } else {
-        theta
-    }
-}
+//     let mid_point_first_line = [
+//         ((first_line.start[0] + first_line.end[0]) as f32 / 2.0).round() as u32,
+//         ((first_line.start[1] + first_line.end[1]) as f32 / 2.0).round() as u32
+//     ];
 
-fn contour_winding(lines: &[ContourLine]) -> Winding {
-    let first_line = &lines[0];
+//     let right_vec_line: [i32; 2] = [
+//         vec_line[1],
+//         - vec_line[0],
+//     ];
 
-    let vec_line: [i32; 2] = [
-        first_line.end[0] as i32 - first_line.start[0] as i32,
-        first_line.end[1] as i32 - first_line.start[1] as i32,
-    ];
+//     let right_len = vec_len(right_vec_line);
 
-    let mid_point_first_line = [
-        ((first_line.start[0] + first_line.end[0]) as f32 / 2.0).round() as u32,
-        ((first_line.start[1] + first_line.end[1]) as f32 / 2.0).round() as u32
-    ];
+//     let mut cross_end_of_line: Option<i32> = None;
+//     let mut cross_count = 0;
+//     for line in lines[1..].iter() {
+//         let from_middle_to_start = [line.start[0] as i32 - mid_point_first_line[0] as i32, line.start[1] as i32 - mid_point_first_line[1] as i32, ];
+//         let from_middle_to_end = [line.end[0] as i32 - mid_point_first_line[0] as i32, line.end[1] as i32 - mid_point_first_line[1] as i32, ];
 
-    let right_vec_line: [i32; 2] = [
-        vec_line[1],
-        - vec_line[0],
-    ];
+//         let start_cos_theta = right_vec_line[0] * from_middle_to_start[0] + right_vec_line[1] * from_middle_to_start[1];
+//         let end_cos_theta = right_vec_line[0] * from_middle_to_end[0] + right_vec_line[1] * from_middle_to_end[1];
 
-    let right_len = vec_len(right_vec_line);
+//         let start_sin_theta = vec_line[0] * from_middle_to_start[0] + vec_line[1] * from_middle_to_start[1];
+//         let end_sin_theta = vec_line[0] * from_middle_to_end[0] + vec_line[1] * from_middle_to_end[1];
 
-    let mut cross_end_of_line: Option<i32> = None;
-    let mut cross_count = 0;
-    for line in lines[1..].iter() {
-        let from_middle_to_start = [line.start[0] as i32 - mid_point_first_line[0] as i32, line.start[1] as i32 - mid_point_first_line[1] as i32, ];
-        let from_middle_to_end = [line.end[0] as i32 - mid_point_first_line[0] as i32, line.end[1] as i32 - mid_point_first_line[1] as i32, ];
+//         if start_cos_theta <= 0 || end_cos_theta <= 0 {
+//             let sin_theta_start = start_sin_theta as f32 / (right_len * vec_len(from_middle_to_start)) as f32;
+//             let start_theta = find_theta(start_cos_theta, sin_theta_start);
 
-        let start_cos_theta = right_vec_line[0] * from_middle_to_start[0] + right_vec_line[1] * from_middle_to_start[1];
-        let end_cos_theta = right_vec_line[0] * from_middle_to_end[0] + right_vec_line[1] * from_middle_to_end[1];
+//             let sin_theta_end = end_sin_theta as f32 / (right_len * vec_len(from_middle_to_end)) as f32;
+//             let end_theta = find_theta(end_cos_theta, sin_theta_end);
 
-        let start_sin_theta = vec_line[0] * from_middle_to_start[0] + vec_line[1] * from_middle_to_start[1];
-        let end_sin_theta = vec_line[0] * from_middle_to_end[0] + vec_line[1] * from_middle_to_end[1];
+//             if start_theta + end_theta >= PI {
+//                 continue;
+//             }
+//         }
 
-        if start_cos_theta <= 0 || end_cos_theta <= 0 {
-            let sin_theta_start = start_sin_theta as f32 / (right_len * vec_len(from_middle_to_start)) as f32;
-            let start_theta = find_theta(start_cos_theta, sin_theta_start);
+//         if end_sin_theta == 0 || start_sin_theta == 0 {
+//             let current_line_vec = [
+//                 line.end[0] as i32 - line.start[0] as i32,
+//                 line.end[1] as i32 - line.start[1] as i32,
+//             ];
 
-            let sin_theta_end = end_sin_theta as f32 / (right_len * vec_len(from_middle_to_end)) as f32;
-            let end_theta = find_theta(end_cos_theta, sin_theta_end);
+//             let current_line_right_vec = [
+//                 current_line_vec[1],
+//                 - current_line_vec[0],
+//             ];
 
-            if start_theta + end_theta >= PI {
-                continue;
-            }
-        }
+//             let current_line_cos = current_line_right_vec[0] * from_middle_to_end[0] + current_line_right_vec[1] * from_middle_to_end[1];
 
-        if end_sin_theta == 0 || start_sin_theta == 0 {
-            let current_line_vec = [
-                line.end[0] as i32 - line.start[0] as i32,
-                line.end[1] as i32 - line.start[1] as i32,
-            ];
+//             if let Some(cos) = cross_end_of_line {
+//                 if current_line_cos.signum() + cos.signum() != 0 {
+//                     cross_count += 1;
+//                 }
 
-            let current_line_right_vec = [
-                current_line_vec[1],
-                - current_line_vec[0],
-            ];
+//                 cross_end_of_line = None;
+//             } else {
+//                 cross_end_of_line = Some(current_line_cos);
+//             }
 
-            let current_line_cos = current_line_right_vec[0] * from_middle_to_end[0] + current_line_right_vec[1] * from_middle_to_end[1];
+//         } else if start_sin_theta.signum() + end_sin_theta.signum() == 0 {
+//             cross_count += 1;
+//         }
 
-            if let Some(cos) = cross_end_of_line {
-                if current_line_cos.signum() + cos.signum() != 0 {
-                    cross_count += 1;
-                }
+//         // if let None = point_inside {
+//         //     if end_sin_theta != 0 || start_sin_theta != 0 {
+//         //         let current_line_vec = [
+//         //             line.end[0] as i32 - line.start[0] as i32,
+//         //             line.end[1] as i32 - line.start[1] as i32,
+//         //         ];
 
-                cross_end_of_line = None;
-            } else {
-                cross_end_of_line = Some(current_line_cos);
-            }
+//         //         if vec_len(current_line_vec) < 2.0 {
+//         //             continue;
+//         //         }
 
-        } else if start_sin_theta.signum() + end_sin_theta.signum() == 0 {
-            cross_count += 1;
-        }
+//         //         let current_line_right_vec = [
+//         //             current_line_vec[1],
+//         //             - current_line_vec[0],
+//         //         ];
 
-        // if let None = point_inside {
-        //     if end_sin_theta != 0 || start_sin_theta != 0 {
-        //         let current_line_vec = [
-        //             line.end[0] as i32 - line.start[0] as i32,
-        //             line.end[1] as i32 - line.start[1] as i32,
-        //         ];
+//         //         let start = [
+//         //             ((line.start[0] + line.end[0]) as f32 / 2.0).round() as u32,
+//         //             ((line.start[1] + line.end[1]) as f32 / 2.0).round() as u32
+//         //         ];
 
-        //         if vec_len(current_line_vec) < 2.0 {
-        //             continue;
-        //         }
+//         //         let len = vec_len(current_line_right_vec);
+//         //         let xm = current_line_right_vec[0] as f32 / len;
+//         //         let ym = current_line_right_vec[1] as f32 / len;
 
-        //         let current_line_right_vec = [
-        //             current_line_vec[1],
-        //             - current_line_vec[0],
-        //         ];
+//         //         let mut i: f32 = 0.0;
 
-        //         let start = [
-        //             ((line.start[0] + line.end[0]) as f32 / 2.0).round() as u32,
-        //             ((line.start[1] + line.end[1]) as f32 / 2.0).round() as u32
-        //         ];
+//         //         let mut point = [start[0] as usize, start[1] as usize * bitmap_width];
+//         //         while bitmap[point[0] + point[1]] != 0 {
+//         //             i += 1.0;
+//         //             point = [(start[0] as f32 + i * xm) as usize, (start[1] as f32 + i * ym) as usize * bitmap_width];
+//         //         }
 
-        //         let len = vec_len(current_line_right_vec);
-        //         let xm = current_line_right_vec[0] as f32 / len;
-        //         let ym = current_line_right_vec[1] as f32 / len;
-
-        //         let mut i: f32 = 0.0;
-
-        //         let mut point = [start[0] as usize, start[1] as usize * bitmap_width];
-        //         while bitmap[point[0] + point[1]] != 0 {
-        //             i += 1.0;
-        //             point = [(start[0] as f32 + i * xm) as usize, (start[1] as f32 + i * ym) as usize * bitmap_width];
-        //         }
-
-        //         point_inside = Some(point);
-        //     }
-        // }
-    }
+//         //         point_inside = Some(point);
+//         //     }
+//         // }
+//     }
 
 
-    let winding = if cross_count % 2 == 0 {
-        Winding::CounterClockWise
-    } else {
-        Winding::ClockWise
-    };
+//     let winding = if cross_count % 2 == 0 {
+//         Winding::CounterClockWise
+//     } else {
+//         Winding::ClockWise
+//     };
 
-    winding
-}
+//     winding
+// }
 
 #[inline(always)]
 fn extend_lines_from_bezier_curve(line: &ContourLine, control_points: &[[u32; 2]], lines: &mut Vec<ContourLine>) {
@@ -950,7 +1088,7 @@ fn extend_lines_from_bezier_curve(line: &ContourLine, control_points: &[[u32; 2]
 }
 
 #[inline(always)]
-fn draw_line(line: &ContourLine, width: u32, bitmap: &mut [u8], quad_offset: [u32; 2]) {
+fn draw_line(line: &ContourLine, bitmap_width: u32, bitmap: &mut [u8], quad_offset: [u32; 2]) {
     let first_x = std::cmp::min(line.start[0], line.end[0]);
     let first_y = std::cmp::min(line.start[1], line.end[1]);
 
@@ -970,6 +1108,6 @@ fn draw_line(line: &ContourLine, width: u32, bitmap: &mut [u8], quad_offset: [u3
         let x: u32 = (line.start[0] as f32 + i as f32 * x_m).round() as u32;
         let y: u32 = (line.start[1] as f32 + i as f32 * y_m).round() as u32;
 
-        bitmap[(x + quad_offset[0] + (quad_offset[1] + y) * width) as usize] = 255;
+        bitmap[(x + quad_offset[0] + (quad_offset[1] + y) * bitmap_width) as usize] = 255;
     }
 }
