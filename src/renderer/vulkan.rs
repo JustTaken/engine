@@ -1466,10 +1466,10 @@ pub fn swapchain(
         let index: usize = i as usize * 4;
 
         instance_vertex_buffer[index..(index + 4)].copy_from_slice(&[
-            [x_offset, y_offset + height],
-            [x_offset + width, y_offset + height],
             [x_offset, y_offset],
             [x_offset + width, y_offset],
+            [x_offset, y_offset + height],
+            [x_offset + width, y_offset + height],
         ]);
 
         let vertex_copy_info = vulkan::BufferCopy {
@@ -1525,10 +1525,10 @@ pub fn swapchain(
     unsafe { (device.vkCmdCopyBuffer)(vertex_command_buffer, index_staging_buffer.handle, index_buffer.handle, 1, &index_copy_info as *const vulkan::BufferCopy) };
 
     let cursor_texture_coords: [[f32; 2]; 4] = [
-        [0.0, 1.0],
-        [1.0, 1.0],
         [0.0, 0.0],
         [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
     ];
 
     let cursor_vertex_staging_buffer = buffer::<[f32; 2]>(device, vulkan::BUFFER_USAGE_TRANSFER_SRC_BIT, vulkan::MEMORY_PROPERTY_HOST_VISIBLE_BIT | vulkan::MEMORY_PROPERTY_HOST_COHERENT_BIT, cursor_texture_coords.len())?;
@@ -1942,26 +1942,26 @@ fn record_command_buffer(
         pInheritanceInfo: &inheritance_info as *const vulkan::CommandBufferInheritanceInfo,
     };
 
-    // if !command_buffer.is_text_updated {
-    //     unsafe { (device.vkBeginCommandBuffer)(command_buffer.secondary[0], &secondary_command_buffer_begin_info as *const vulkan::CommandBufferBeginInfo) };
-    //     unsafe { (device.vkCmdSetViewport)(command_buffer.secondary[0], 0, 1, &viewport as *const vulkan::Viewport) };
-    //     unsafe { (device.vkCmdSetScissor)(command_buffer.secondary[0], 0, 1, &scissor as *const vulkan::Rect2D) };
+    if !command_buffer.is_text_updated {
+        unsafe { (device.vkBeginCommandBuffer)(command_buffer.secondary[0], &secondary_command_buffer_begin_info as *const vulkan::CommandBufferBeginInfo) };
+        unsafe { (device.vkCmdSetViewport)(command_buffer.secondary[0], 0, 1, &viewport as *const vulkan::Viewport) };
+        unsafe { (device.vkCmdSetScissor)(command_buffer.secondary[0], 0, 1, &scissor as *const vulkan::Rect2D) };
 
-    //     record_text_secondary_command_buffer(
-    //         device,
-    //         command_buffer.secondary[0],
-    //         vertex_buffer,
-    //         index_buffer,
-    //         uniform_descriptor_set,
-    //         texture_descriptor_set,
-    //         graphics_pipeline,
-    //         characters
-    //     );
+        record_text_secondary_command_buffer(
+            device,
+            command_buffer.secondary[0],
+            vertex_buffer,
+            index_buffer,
+            uniform_descriptor_set,
+            texture_descriptor_set,
+            graphics_pipeline,
+            characters
+        );
 
-    //     unsafe { (device.vkEndCommandBuffer)(command_buffer.secondary[0]) };
+        unsafe { (device.vkEndCommandBuffer)(command_buffer.secondary[0]) };
 
-    //     command_buffer.is_text_updated = true;
-    // }
+        command_buffer.is_text_updated = true;
+    }
 
     unsafe { (device.vkBeginCommandBuffer)(command_buffer.secondary[1], &secondary_command_buffer_begin_info as *const vulkan::CommandBufferBeginInfo) };
     unsafe { (device.vkCmdSetViewport)(command_buffer.secondary[1], 0, 1, &viewport as *const vulkan::Viewport) };
@@ -1973,15 +1973,15 @@ fn record_command_buffer(
         cursor_vertex_buffer,
         index_buffer,
         uniform_descriptor_set,
-        // cursor_texture_descriptor_set,
-        texture_descriptor_set,
+        cursor_texture_descriptor_set,
+        // texture_descriptor_set,
         graphics_pipeline,
         cursor,
     );
 
     unsafe { (device.vkEndCommandBuffer)(command_buffer.secondary[1]) };
 
-    unsafe { (device.vkCmdExecuteCommands)(command_buffer.handle, 1, command_buffer.secondary[1..].as_ptr() as *const *mut vulkan::CommandBuffer) };
+    unsafe { (device.vkCmdExecuteCommands)(command_buffer.handle, 2, command_buffer.secondary.as_ptr() as *const *mut vulkan::CommandBuffer) };
     unsafe { (device.vkCmdEndRenderPass)(command_buffer.handle) };
     unsafe { (device.vkEndCommandBuffer)(command_buffer.handle) };
 }

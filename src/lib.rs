@@ -8,8 +8,7 @@ mod font_test {
 
     #[test]
     fn init_font() -> Result<(), font::ParseError> {
-        font::init("assets/fonts/font.ttf", &(32..127).collect::<Vec<u8>>(), 255)?;
-
+        font::init("assets/fonts/font.ttf", &(32..127).collect::<Vec<u8>>(), 100)?;
         Ok(())
     }
 }

@@ -4,6 +4,6 @@
 .package-cache
 .package-cache-mutate
 Cargo.lock
-TODO.org
 /assets/shader/vert.spv
 /assets/shader/frag.spv
+/registry
