@@ -6,9 +6,6 @@ pub fn main() {
     let default_width = 1920;
     let default_height = 1080;
     let char_set = (32..127).collect::<Vec<u8>>();
-    // let char_set = [89 + 32];
-
-    // let char_set = [b'b'];
     let font = font::init("assets/fonts/font.ttf", &char_set, 25).unwrap();
 
     let mut window = wayland::init("Engine name", default_width, default_height, font.scale, font.x_ratio).unwrap();
@@ -32,7 +29,7 @@ pub fn main() {
             &mut swapchain,
             &graphics_pipeline,
             &mut window.unique_chars,
-            &window.cursor,
+            &window.buffer,
             window.width,
             window.height
         ) {

@@ -47,9 +47,10 @@ const PADDING: u32 = 2;
 pub fn init(path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFont, ParseError> {
     let lib = freetype::Library::init().unwrap();
     let face = lib.new_face(path, 0).unwrap();
+
     face.set_pixel_sizes(size as u32, 0).unwrap();
 
-    let scale = size as f32 / face.em_size() as f32;
+    let scale = size as f32 / face.height() as f32;
     let ascender = (face.ascender() as f32 * scale).round() as i32;
     let max_advance = (face.max_advance_width() as f32 * scale).round() as u32;
     let line_height = (scale * face.height() as f32) as u32;
@@ -65,15 +66,16 @@ pub fn init(path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFont, Pa
     let texture_width = (glyphs_per_row + PADDING) * max_advance;
     let texture_height = (line_height + PADDING) * line_count;
 
+    let mut metrics = Vec::new();
+    let mut texture: Vec<u8> = vec![0; (texture_width * texture_height) as usize];
+
     let mut x_offset = 0;
     let mut y_offset = 0;
     let mut i = 0;
 
-    let mut metrics = Vec::new();
-    let mut texture: Vec<u8> = vec![0; (texture_width * texture_height) as usize];
-
     for code_point in code_points.iter() {
         face.load_char(*code_point as usize, freetype::face::LoadFlag::RENDER).unwrap();
+
         let glyph = face.glyph();
         let bitmap = glyph.bitmap();
         let buffer = bitmap.buffer();
@@ -83,14 +85,12 @@ pub fn init(path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFont, Pa
         let advance = max_advance;
 
         let left_bearing = (metric.horiBearingX as f32 * scale).round() as u32;
-        let bearing = (metric.horiBearingY as f32 * scale).round() as usize;
         let topmost = glyph.bitmap_top();
-
-        let l = ascender - topmost;
+        let top_offset = ascender - topmost;
 
         add_bitmap_to_atlas(
             (left_bearing + x_offset) as usize,
-            (l + y_offset as i32) as usize,
+            (top_offset + y_offset as i32) as usize,
             &buffer,
             texture_width as usize,
             width as usize,

@@ -6,7 +6,7 @@ use crate::binding::wayland;
 
 use crate::font::TrueTypeFont;
 use crate::renderer::wayland::UniqueChars;
-use crate::renderer::wayland::Cursor;
+use crate::renderer::wayland::buffer::Buffer as WindowBuffer;
 
 macro_rules! instance_function {
     ($proc:ident, $instance:ident, $name:ident) => {
@@ -82,7 +82,6 @@ pub struct Instance {
     vkCreateDevice: vulkan::vkCreateDevice,
     vkGetDeviceQueue: vulkan::vkGetDeviceQueue,
     vkGetDeviceProcAddr: vulkan::vkGetDeviceProcAddr,
-    vkGetPhysicalDeviceFormatProperties: vulkan::vkGetPhysicalDeviceFormatProperties,
 }
 
 pub struct Device {
@@ -289,7 +288,6 @@ pub fn instance(extensions: &[*const std::ffi::c_char]) -> Result<Instance, Load
         vkCreateDevice: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkCreateDevice)?,
         vkGetDeviceQueue: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetDeviceQueue)?,
         vkGetDeviceProcAddr: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetDeviceProcAddr)?,
-        vkGetPhysicalDeviceFormatProperties: instance_function!(vkGetInstanceProcAddr, instance, PFN_vkGetPhysicalDeviceFormatProperties)?,
     })
 }
 
@@ -1818,14 +1816,14 @@ fn record_text_secondary_command_buffer(
     unsafe { (device.vkCmdBindDescriptorSets)(command_buffer, vulkan::PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline.layout, 0, 2, [uniform_descriptor_set, texture_descriptor_set].as_ptr() as *const *mut vulkan::DescriptorSet, 0, std::ptr::null()) };
     unsafe { (device.vkCmdBindIndexBuffer)(command_buffer, index_buffer as *mut vulkan::Buffer, 0, vulkan::INDEX_TYPE_UINT16) };
 
-    for (i, offset) in characters.offset.iter().enumerate() {
-        if *offset == 255 || i == 0 {
+    for (i, offset) in characters.positions.iter().enumerate() {
+        if offset.len() == 0 || i == 0 {
             continue;
         }
 
         unsafe { (device.vkCmdBindVertexBuffers)(command_buffer, 0, 1, &vertex_buffer as *const *mut vulkan::Buffer, [(std::mem::size_of::<[f32; 2]>() * i) as u64 * 4].as_ptr()) };
 
-        for pos in characters.positions[*offset as usize].iter() {
+        for pos in offset.iter() {
             unsafe { (device.vkCmdPushConstants)(command_buffer, graphics_pipeline.layout, vulkan::SHADER_STAGE_VERTEX_BIT, 0, std::mem::size_of::<f32>() as u32 * 2, std::mem::transmute::<*const f32, *const std::ffi::c_void>([pos[0] as f32 * 2.0 + 1.0, pos[1] as f32 * 2.0 + 1.0].as_ptr())) };
             unsafe { (device.vkCmdDrawIndexed)(command_buffer, 6, 1, 0, 0, 0) };
         }
@@ -1840,15 +1838,20 @@ fn record_cursor_secondary_command_buffer(
     uniform_descriptor_set: *mut vulkan::DescriptorSet,
     texture_descriptor_set: *mut vulkan::DescriptorSet,
     graphics_pipeline: &GraphicsPipeline,
-    cursor: &Cursor
+    buffer: &WindowBuffer
 ) {
     unsafe { (device.vkCmdBindPipeline)(command_buffer, vulkan::PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline.handle) };
     unsafe { (device.vkCmdBindDescriptorSets)(command_buffer, vulkan::PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline.layout, 0, 2, [uniform_descriptor_set, texture_descriptor_set].as_ptr() as *const *mut vulkan::DescriptorSet, 0, std::ptr::null()) };
     unsafe { (device.vkCmdBindIndexBuffer)(command_buffer, index_buffer as *mut vulkan::Buffer, 0, vulkan::INDEX_TYPE_UINT16) };
-
     unsafe { (device.vkCmdBindVertexBuffers)(command_buffer, 0, 1, &vertex_buffer as *const *mut vulkan::Buffer, [0].as_ptr()) };
-    unsafe { (device.vkCmdPushConstants)(command_buffer, graphics_pipeline.layout, vulkan::SHADER_STAGE_VERTEX_BIT, 0, std::mem::size_of::<f32>() as u32 * 2, std::mem::transmute::<*const f32, *const std::ffi::c_void>([cursor.xpos as f32 * 2.0 + 1.0, cursor.ypos as f32 * 2.0 + 1.0].as_ptr())) };
-    unsafe { (device.vkCmdDrawIndexed)(command_buffer, 6, 1, 0, 0, 0) };
+
+    for cursor in buffer.cursors.iter() {
+        let xpos = cursor.x - buffer.offset.x;
+        let ypos = cursor.y - buffer.offset.y;
+
+        unsafe { (device.vkCmdPushConstants)(command_buffer, graphics_pipeline.layout, vulkan::SHADER_STAGE_VERTEX_BIT, 0, std::mem::size_of::<f32>() as u32 * 2, std::mem::transmute::<*const f32, *const std::ffi::c_void>([xpos as f32 * 2.0 + 1.0, ypos as f32 * 2.0 + 1.0].as_ptr())) };
+        unsafe { (device.vkCmdDrawIndexed)(command_buffer, 6, 1, 0, 0, 0) };
+    }
 }
 
 fn record_command_buffer(
@@ -1864,7 +1867,7 @@ fn record_command_buffer(
     extent: &vulkan::Extent2D,
     graphics_pipeline: &GraphicsPipeline,
     characters: &mut UniqueChars,
-    cursor: &Cursor,
+    buffer: &WindowBuffer,
 ) {
     let begin_info = vulkan::CommandBufferBeginInfo {
         sType: vulkan::STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1976,7 +1979,7 @@ fn record_command_buffer(
         cursor_texture_descriptor_set,
         // texture_descriptor_set,
         graphics_pipeline,
-        cursor,
+        buffer,
     );
 
     unsafe { (device.vkEndCommandBuffer)(command_buffer.secondary[1]) };
@@ -2004,7 +2007,7 @@ pub fn draw_frame(
     swapchain: &mut Swapchain,
     graphics_pipeline: &GraphicsPipeline,
     characters: &mut UniqueChars,
-    cursor: &Cursor,
+    buffer: &WindowBuffer,
     width: u32,
     height: u32
 ) -> Result<(), LoadError> {
@@ -2042,7 +2045,7 @@ pub fn draw_frame(
         &swapchain.extent,
         graphics_pipeline,
         characters,
-        cursor,
+        buffer,
     );
 
     unsafe { (device.vkResetFences)(device.handle, 1, &swapchain.in_flight as *const *mut vulkan::Fence) };
