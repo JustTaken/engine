@@ -9,7 +9,6 @@ pub struct Core {
     pub width: u32,
     pub height: u32,
 
-    pub unique_chars: UniqueChars,
     pub changed: bool,
     pub buffer: buffer::Buffer,
 
@@ -56,9 +55,35 @@ pub enum WaylandError {
 pub mod buffer {
     use super::Core;
 
+    // pub struct Character {
+    //     next: Option<Character>,
+    //     prev: Option<Character>,
+
+    //     next_same: SameCode,
+    //     prev_same: SameCode,
+
+    //     position: Position,
+    // }
+
+    // pub enum CharCode {
+    //     Same(&Character),
+    //     Other(&Character),
+    //     None,
+    // }
+
     pub struct Line {
         pub content: Vec<u8>,
         pub indent: u32,
+    }
+
+    pub struct UniqueChars {
+        pub positions: Vec<Vec<[u8; 2]>>,
+    }
+
+    pub struct ModeLine {
+        left: Vec<u8>,
+        middle: Vec<u8>,
+        right: Vec<u8>,
     }
 
     pub struct Buffer {
@@ -66,6 +91,8 @@ pub mod buffer {
         pub offset: Offset,
         pub lines: Vec<Line>,
         pub file_name: Option<String>,
+        pub unique_chars: UniqueChars,
+        pub mode_line: ModeLine,
         main_cursor_index: u32,
     }
 
@@ -79,7 +106,18 @@ pub mod buffer {
         pub y: u32,
     }
 
-    pub fn empty_buffer() -> Buffer {
+    pub fn empty_buffer(chars_per_row: u32, chars_per_coloumn: u32) -> Buffer {
+        let mode_line = ModeLine {
+            left: vec![b'm', b'a', b'c', b'o', b'n', b'h', b'a'],
+            middle: Vec::new(),
+            right: Vec::new(),
+        };
+        let lines = vec![
+            Line {
+                content: Vec::new(),
+                indent: 0,
+            }
+        ];
         Buffer {
             file_name: None,
             offset: Offset {
@@ -87,12 +125,9 @@ pub mod buffer {
                 y: 0,
             },
             main_cursor_index: 0,
-            lines: vec![
-                Line {
-                    content: Vec::new(),
-                    indent: 0,
-                }
-            ],
+            unique_chars: unique_chars_from_lines(chars_per_row, chars_per_coloumn, &lines, &mode_line),
+            lines,
+            mode_line,
             cursors: vec![
                 Position {
                     x: 0,
@@ -102,7 +137,65 @@ pub mod buffer {
         }
     }
 
-    pub fn get_this_line_or_max(lines: &Vec<Line>, i: u32) -> u32 {
+    pub fn buffer_from_file(chars_per_row: u32, chars_per_coloumn: u32, file_path: &str) -> Buffer {
+        let content = std::fs::read_to_string(file_path).unwrap();
+
+        let mut lines: Vec<Line> = Vec::with_capacity(30);
+        for line in content.lines() {
+
+            let mut initial_spacing_count = 0;
+            let mut first_non_blank_char_flag = false;
+
+            let mut current_line = Line {
+                content: Vec::with_capacity(30),
+                indent: 0,
+            };
+
+            let len = line.len();
+            for c in line.chars() {
+                let c = c as u8;
+
+                if !first_non_blank_char_flag {
+                    if c == b' ' {
+                        initial_spacing_count += 1;
+                    } else {
+                        first_non_blank_char_flag = true;
+                    }
+                }
+
+                current_line.content.push(c);
+            }
+
+            current_line.indent = initial_spacing_count;
+            lines.push(current_line);
+        }
+
+        let mode_line = ModeLine {
+            left: file_path.chars().map(|c| c as u8).collect(),
+            middle: Vec::new(),
+            right: vec![b'l', b':', b' ', b'0', b' ', b'c', b':', b' ', b'0'],
+        };
+
+        Buffer {
+            file_name: Some(file_path.to_owned()),
+            offset: Offset {
+                x: 0,
+                y: 0,
+            },
+            main_cursor_index: 0,
+            unique_chars: unique_chars_from_lines(chars_per_row, chars_per_coloumn, &lines, &mode_line),
+            lines,
+            mode_line,
+            cursors: vec![
+                Position {
+                    x: 0,
+                    y: 0,
+                }
+            ],
+        }
+    }
+
+    pub fn get_this_line_or_max(lines: &[Line], i: u32) -> u32 {
         let len = lines.len() as u32;
 
         if len < i {
@@ -112,26 +205,44 @@ pub mod buffer {
         }
     }
 
+    // fn parse(number: u32) -> String {
+    //     let mut n = number;
+    //     let mut i = 9;
+    //     while n > 0 {
+    //         let c = n - i;
+    //         n -= n - c - i;
+    //     }
+
+    //     let first = number & 0x000000FF;
+    //     let second = (number & 0x0000FF00) >> 8;
+    //     let third = (number & 0x00FF0000) >> 16;
+    //     let fourth = (number & 0xFF000000) >> 24;
+    // }
+
     pub fn check_offset(core: &mut Core) -> bool {
         let buffer = &mut core.buffer;
         let cursor = &buffer.cursors[buffer.main_cursor_index as usize];
-        let mut change_flag = true;
+        let mut change_flag = false;
 
         if cursor.y >= buffer.offset.y + core.chars_per_coloumn {
             buffer.offset.y = cursor.y - core.chars_per_coloumn + 1;
+            change_flag = true;
         } else if cursor.y < buffer.offset.y {
             buffer.offset.y = cursor.y;
-        } else {
-            change_flag = false;
+            change_flag = true;
         }
 
         if cursor.x > buffer.offset.x + core.chars_per_row {
-            buffer.offset.x = cursor.x - core.chars_per_row ;
+            buffer.offset.x = cursor.x - core.chars_per_row;
+            change_flag = true;
         } else if cursor.x < buffer.offset.x {
             buffer.offset.x = cursor.x;
-        } else {
-            change_flag = false;
+            change_flag = true;
         }
+
+        // let line_number_parse = str::parse(cursor.position.y).unwrap();
+        // let col_number_parse = str::parse(cursor.position.x).unwrap();
+        // core.buffer.mode_line.right =
 
         change_flag
     }
@@ -215,19 +326,20 @@ pub mod buffer {
 
     pub fn insert_new_line(core: &mut Core, position_index: usize) {
         let position = &mut core.buffer.cursors[position_index];
-
-        let mut vec = Vec::with_capacity(core.chars_per_row as usize);
+        let indent = core.buffer.lines[position.y as usize].indent;
+        let mut vec = vec![b' '; indent as usize];
         vec.extend_from_slice(&core.buffer.lines[position.y as usize].content[position.x as usize..]);
+        println!("indent: {}", indent);
 
         let line = Line {
             content: vec,
-            indent: 0,
+            indent: indent,
         };
 
         position.y += 1;
         core.buffer.lines.insert(position.y as usize, line);
         core.buffer.lines[position.y as usize - 1].content.truncate(position.x as usize);
-        position.x = 0;
+        position.x = indent;
     }
 
     const TAB_LEN: usize = 4;
@@ -237,16 +349,14 @@ pub mod buffer {
         let chars_inserted = if c == b'\t' {
             let position = &core.buffer.cursors[position_index];
             let current_line = &mut core.buffer.lines[position.y as usize];
+            let indent = TAB_LEN as u32 + current_line.indent;
 
-            let mut content = Vec::with_capacity(current_line.content.len() + TAB_LEN);
-
-            content.extend_from_slice(&current_line.content[0..position.x as usize]);
-            content.extend_from_slice(&[b' '; TAB_LEN]);
-            content.extend_from_slice(&current_line.content[position.x as usize..]);
+            let mut content = vec![b' '; TAB_LEN as usize];
+            content.extend_from_slice(&current_line.content);
 
             *current_line = Line {
                 content,
-                indent: 0,
+                indent,
             };
 
             TAB_LEN
@@ -256,8 +366,7 @@ pub mod buffer {
             1
         };
 
-        insert_unique_char(core, position_index);
-
+        update_chars(core);
         core.buffer.cursors[position_index].x += chars_inserted as u32;
     }
 
@@ -278,82 +387,142 @@ pub mod buffer {
         core.buffer.lines[position.y as usize].content.drain(position.x as usize..);
     }
 
-    fn insert_unique_char(core: &mut Core, position_index: usize) {
-        let pos = &core.buffer.cursors[position_index];
-        let content = &core.buffer.lines[pos.y as usize].content;
-        let c = content[pos.x as usize] - 32;
-        let line_len = content.len();
+    // fn insert_unique_tab(core: &mut Core, position_index: usize) {
+    //     let pos = &core.buffer.cursors[position_index];
+    //     let content = &core.buffer.lines[pos.y as usize].content;
+    //     let relative_line = pos.y - core.buffer.offset.y;
+    //     let line_offset = relative_line as usize * core.chars_per_row as usize;
+    //     let mut max_col = content.len() - core.buffer.offset.x as usize - 1;
 
-        let relative_line = pos.y - core.buffer.offset.y;
-        let relative_coloumn = pos.x - core.buffer.offset.x;
-        let line_offset = relative_line as usize * core.chars_per_row as usize;
+    //     if max_col + 4 >= core.chars_per_row as usize {
+    //         max_col = core.chars_per_row as usize - 4;
+    //     }
 
-        if pos.x + 1 < line_len as u32 {
-            let max_col = line_len - core.buffer.offset.x as usize - 1;
+    //     for j in 0..max_col {
+    //         let coordinates = core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize - 1];
+    //         core.buffer.unique_chars.positions[coordinates[0] as usize][coordinates[1] as usize][0] += TAB_LEN as u8;
+    //         core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize + TAB_LEN] = core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize - 1];
+    //     }
+    // }
 
-            for j in 0..max_col as u32 - relative_coloumn {
-                let coordinates = core.unique_chars.screen_coordinates[line_offset + max_col - j as usize - 1];
+    // fn insert_unique_char(core: &mut Core, position_index: usize) {
+    //     let pos = &core.buffer.cursors[position_index];
+    //     let content = &core.buffer.lines[pos.y as usize].content;
+    //     let c = content[pos.x as usize] - 32;
+    //     let line_len = content.len();
 
-                core.unique_chars.positions[coordinates[0] as usize][coordinates[1] as usize][0] += 1;
-                core.unique_chars.screen_coordinates[line_offset + max_col - j as usize] = core.unique_chars.screen_coordinates[line_offset + max_col - j as usize - 1];
-            }
-        }
+    //     let relative_line = pos.y - core.buffer.offset.y;
+    //     let relative_coloumn = pos.x - core.buffer.offset.x;
+    //     let line_offset = relative_line as usize * core.chars_per_row as usize;
 
-        let index = core.unique_chars.positions[c as usize].len() as u8;
-        core.unique_chars.positions[c as usize].push([relative_coloumn as u8, relative_line as u8]);
-        core.unique_chars.screen_coordinates[line_offset + relative_coloumn as usize] = [c, index];
-    }
+    //     if pos.x + 1 < line_len as u32 {
+    //         let max_col = line_len - core.buffer.offset.x as usize - 1;
 
-    pub fn delete_unique_char(core: &mut Core, position_index: usize) {
-        let pos = &core.buffer.cursors[position_index];
-        let content = &core.buffer.lines[pos.y as usize].content;
+    //         for j in 0..max_col as u32 - relative_coloumn {
+    //             let coordinates = core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize - 1];
 
-        let line_len = content.len();
-        let relative_line = pos.y - core.buffer.offset.y;
-        let relative_coloumn = pos.x - core.buffer.offset.x;
-        let line_offset = relative_line as usize * core.chars_per_row as usize;
-        let max_col = line_len - core.buffer.offset.x as usize - 1;
+    //             core.buffer.unique_chars.positions[coordinates[0] as usize][coordinates[1] as usize][0] += 1;
+    //             core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize] = core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize - 1];
+    //         }
+    //     }
 
-        if pos.x + 1 < line_len as u32 {
-            for j in relative_coloumn + 1..max_col as u32 {
-                let coordinates = core.unique_chars.screen_coordinates[line_offset + j as usize];
+    //     let index = core.buffer.unique_chars.positions[c as usize].len() as u8;
+    //     core.buffer.unique_chars.positions[c as usize].push([relative_coloumn as u8, relative_line as u8]);
+    //     core.buffer.unique_chars.screen_coordinates[line_offset + relative_coloumn as usize] = [c, index];
+    // }
 
-                core.unique_chars.positions[coordinates[0] as usize][coordinates[1] as usize][0] -= 1;
-                core.unique_chars.screen_coordinates[line_offset + j as usize ] = core.unique_chars.screen_coordinates[line_offset + j as usize + 1];
-            }
-        }
+    // pub fn delete_unique_char(core: &mut Core, position_index: usize) {
+    //     let pos = &core.buffer.cursors[position_index];
+    //     let content = &core.buffer.lines[pos.y as usize].content;
 
-        let coordinate_to_delete = core.unique_chars.screen_coordinates[line_offset + relative_coloumn as usize];
-        let positions = &core.unique_chars.positions[coordinate_to_delete[0] as usize];
-        if positions.len() <= coordinate_to_delete[1] as usize {
-            return;
-        }
+    //     let line_len = content.len();
+    //     let relative_line = pos.y - core.buffer.offset.y;
+    //     let relative_coloumn = pos.x - core.buffer.offset.x;
+    //     let line_offset = relative_line as usize * core.chars_per_row as usize;
+    //     let max_col = line_len - core.buffer.offset.x as usize - 1;
 
-        for position in positions[coordinate_to_delete[1] as usize + 1..].iter() {
-            core.unique_chars.screen_coordinates[(position[1] as u32 * core.chars_per_row + position[0] as u32) as usize][1] -= 1;
-        }
+    //     if pos.x + 1 < line_len as u32 {
+    //         for j in relative_coloumn + 1..max_col as u32 {
+    //             let coordinates = core.unique_chars.screen_coordinates[line_offset + j as usize];
 
-        core.unique_chars.positions[coordinate_to_delete[0] as usize].remove(coordinate_to_delete[1] as usize);
-    }
+    //             core.unique_chars.positions[coordinates[0] as usize][coordinates[1] as usize][0] -= 1;
+    //             core.unique_chars.screen_coordinates[line_offset + j as usize ] = core.unique_chars.screen_coordinates[line_offset + j as usize + 1];
+    //         }
+    //     }
+
+    //     let coordinate_to_delete = core.unique_chars.screen_coordinates[line_offset + relative_coloumn as usize];
+    //     let positions = &core.unique_chars.positions[coordinate_to_delete[0] as usize];
+
+    //     if positions.len() <= coordinate_to_delete[1] as usize {
+    //         return;
+    //     }
+
+    //     for position in positions[coordinate_to_delete[1] as usize + 1..].iter() {
+    //         core.unique_chars.screen_coordinates[(position[1] as u32 * core.chars_per_row + position[0] as u32) as usize][1] -= 1;
+    //     }
+
+    //     core.unique_chars.positions[coordinate_to_delete[0] as usize].remove(coordinate_to_delete[1] as usize);
+    // }
 
     pub fn update_chars(core: &mut Core) {
         let line_max = get_this_line_or_max(&core.buffer.lines, core.buffer.offset.y + core.chars_per_coloumn);
         let lines = &core.buffer.lines[core.buffer.offset.y as usize..line_max as usize];
 
-        for i in 0..core.unique_chars.positions.len() {
-            core.unique_chars.positions[i].clear();
+        for i in 0..core.buffer.unique_chars.positions.len() {
+            core.buffer.unique_chars.positions[i].clear();
         }
 
         for (i, line) in lines.iter().enumerate() {
-            let line_offset = i * core.chars_per_row as usize;
-
             for (j, u) in get_slice(&line.content, core.buffer.offset.x, core.chars_per_row + core.buffer.offset.x).iter().enumerate() {
                 let c = *u as usize - 32;
 
-                let index = core.unique_chars.positions[c].len();
-                core.unique_chars.screen_coordinates[line_offset + j] = [c as u8, index as u8];
-                core.unique_chars.positions[c].push([j as u8, i as u8]);
+                core.buffer.unique_chars.positions[c].push([j as u8, i as u8]);
             }
+        }
+
+        let mode_line_content = mode_line_string(core.chars_per_row, &core.buffer.mode_line);
+
+        for (j, u) in mode_line_content.chars().enumerate() {
+            let c = u as usize - 32;
+            core.buffer.unique_chars.positions[c].push([j as u8, core.chars_per_coloumn as u8]);
+        }
+    }
+
+    fn mode_line_string(chars_per_row: u32, mode_line: &ModeLine) -> String {
+        let mut content: String = std::str::from_utf8(&mode_line.left).unwrap().to_owned();
+        let l = chars_per_row as usize / 2 - mode_line.middle.len() / 2;
+        let white_space = l - content.len();
+
+        content.extend(std::str::from_utf8(&vec![b' '; white_space]));
+        content.extend(std::str::from_utf8(&mode_line.middle));
+
+        let white_space = chars_per_row as usize - content.len() - mode_line.right.len();
+        content.extend(std::str::from_utf8(&mode_line.right));
+
+        content
+    }
+
+    pub fn unique_chars_from_lines(chars_per_row: u32, chars_per_coloumn: u32, lines: &[Line], mode_line: &ModeLine) -> UniqueChars {
+        let line_max = get_this_line_or_max(lines, chars_per_coloumn);
+        let lines = &lines[0..line_max as usize];
+
+        let mut positions: Vec<Vec<[u8; 2]>> = vec![Vec::with_capacity(10); 95];
+        for (i, line) in lines.iter().enumerate() {
+            for (j, u) in get_slice(&line.content, 0, chars_per_row).iter().enumerate() {
+                let c = *u as usize - 32;
+                positions[c].push([j as u8, i as u8]);
+            }
+        }
+
+        let mode_line_content = mode_line_string(chars_per_row, mode_line);
+
+        for (j, u) in mode_line_content.chars().enumerate() {
+            let c = u as usize - 32;
+            positions[c].push([j as u8, chars_per_coloumn as u8]);
+        }
+
+        UniqueChars {
+            positions
         }
     }
 
@@ -368,11 +537,6 @@ pub mod buffer {
             &line[offset as usize..size as usize]
         }
     }
-}
-
-pub struct UniqueChars {
-    pub positions: Vec<Vec<[u8; 2]>>,
-    screen_coordinates: Vec<[u8; 2]>,
 }
 
 pub fn set_unchanged(core: &mut Core) {
@@ -470,10 +634,10 @@ fn start_of_line(core: &mut Core) {
 fn delete_char_at(core: &mut Core) {
     for i in 0..core.buffer.cursors.len() {
         buffer::delete_char_at(core, i);
-        buffer::delete_unique_char(core, i);
     }
 
     buffer::check_offset(core);
+    buffer::update_chars(core);
 
     core.changed = true;
 }
@@ -495,6 +659,7 @@ fn insert_char_at_current_position(core: &mut Core) {
     }
 
     buffer::check_offset(core);
+    buffer::update_chars(core);
     core.changed = true;
 }
 
@@ -551,8 +716,6 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
     core.last_function = None;
 
     if state == 1 {
-        let start = std::time::Instant::now();
-
         if let Ok(b) = try_ascci(code) {
             let c = if core.shift_modifier {
                 b[1]
@@ -590,9 +753,6 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
         if let Some(f) = core.last_function {
             f(core)
         }
-
-        let elapsed = start.elapsed();
-        // println!("this function took {} ns", elapsed.as_nanos());
     }
 }
 
@@ -628,7 +788,7 @@ unsafe extern "C" fn toplevel_configure(data: *mut std::ffi::c_void, _: *mut way
         core.changed = true;
 
         core.window_ratio = core.height as f32 / core.width as f32;
-        core.chars_per_coloumn = (1.0 / core.scale) as u32;
+        core.chars_per_coloumn = (1.0 / core.scale) as u32 - 1;
         core.chars_per_row = (1.0 / (core.scale * core.x_ratio * core.window_ratio)) as u32;
     }
 }
@@ -688,7 +848,7 @@ pub fn init(
     x_ratio: f32,
 ) -> Result<Box<Core>, WaylandError> {
     let window_ratio = height as f32 / width as f32;
-    let chars_per_coloumn = (1.0 / scale) as u32;
+    let chars_per_coloumn = (1.0 / scale) as u32 - 1;
     let chars_per_row = (1.0 / (scale * x_ratio * window_ratio)) as u32;
 
     let mut core = Box::new(Core {
@@ -712,13 +872,9 @@ pub fn init(
         window_ratio,
         running: true,
         changed: false,
-        buffer: buffer::empty_buffer(),
+        buffer: buffer::buffer_from_file(chars_per_row, chars_per_coloumn, "src/main.rs"),
         chars_per_row,
         chars_per_coloumn,
-        unique_chars: UniqueChars {
-            positions: vec![Vec::new(); 95],
-            screen_coordinates: vec![[0, 0]; (chars_per_row * chars_per_coloumn) as usize],
-        },
         key_rate: std::time::Duration::from_millis(20),
         key_delay: std::time::Duration::from_millis(200),
         last_function: None,

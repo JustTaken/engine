@@ -24,11 +24,12 @@ pub fn main() {
     ).unwrap();
 
     while window.running {
+        let start = std::time::Instant::now();
+
         if let Err(_) = vulkan::draw_frame(
             &device,
             &mut swapchain,
             &graphics_pipeline,
-            &mut window.unique_chars,
             &window.buffer,
             window.width,
             window.height
@@ -42,6 +43,9 @@ pub fn main() {
         }
 
         wayland::update(&mut window);
+
+        let elapsed = start.elapsed();
+        // println!("this function took {} ms", elapsed.as_millis());
     }
 
     vulkan::shutdown_swapchain(&device, &swapchain);

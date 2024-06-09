@@ -5,7 +5,7 @@ use crate::binding::vulkan;
 use crate::binding::wayland;
 
 use crate::font::TrueTypeFont;
-use crate::renderer::wayland::UniqueChars;
+use crate::renderer::wayland::buffer::UniqueChars;
 use crate::renderer::wayland::buffer::Buffer as WindowBuffer;
 
 macro_rules! instance_function {
@@ -1866,7 +1866,6 @@ fn record_command_buffer(
     cursor_texture_descriptor_set: *mut vulkan::DescriptorSet,
     extent: &vulkan::Extent2D,
     graphics_pipeline: &GraphicsPipeline,
-    characters: &mut UniqueChars,
     buffer: &WindowBuffer,
 ) {
     let begin_info = vulkan::CommandBufferBeginInfo {
@@ -1958,7 +1957,7 @@ fn record_command_buffer(
             uniform_descriptor_set,
             texture_descriptor_set,
             graphics_pipeline,
-            characters
+            &buffer.unique_chars
         );
 
         unsafe { (device.vkEndCommandBuffer)(command_buffer.secondary[0]) };
@@ -2006,16 +2005,15 @@ pub fn draw_frame(
     device: &Device,
     swapchain: &mut Swapchain,
     graphics_pipeline: &GraphicsPipeline,
-    characters: &mut UniqueChars,
     buffer: &WindowBuffer,
     width: u32,
     height: u32
 ) -> Result<(), LoadError> {
+    std::thread::sleep(std::time::Duration::from_millis(17));
 
     if swapchain.has_changed {
         unsafe { (device.vkWaitForFences)(device.handle, 1, &swapchain.in_flight as *const *mut vulkan::Fence, vulkan::TRUE, 0xFFFFFF) };
     } else {
-        std::thread::sleep(std::time::Duration::from_millis(17));
         return Ok(())
     }
 
@@ -2044,7 +2042,6 @@ pub fn draw_frame(
         swapchain.cursor_texture_descriptor_set,
         &swapchain.extent,
         graphics_pipeline,
-        characters,
         buffer,
     );
 
