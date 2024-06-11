@@ -4,6 +4,7 @@ pub struct stbtt__buf {
     pub cursor: i32,
     pub size: i32,
 }
+
 #[repr(C)]
 pub struct stbtt_fontinfo {
     pub userdata: *mut std::ffi::c_void,

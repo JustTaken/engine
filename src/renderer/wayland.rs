@@ -55,22 +55,6 @@ pub enum WaylandError {
 pub mod buffer {
     use super::Core;
 
-    // pub struct Character {
-    //     next: Option<Character>,
-    //     prev: Option<Character>,
-
-    //     next_same: SameCode,
-    //     prev_same: SameCode,
-
-    //     position: Position,
-    // }
-
-    // pub enum CharCode {
-    //     Same(&Character),
-    //     Other(&Character),
-    //     None,
-    // }
-
     pub struct Line {
         pub content: Vec<u8>,
         pub indent: u32,
@@ -151,7 +135,6 @@ pub mod buffer {
                 indent: 0,
             };
 
-            let len = line.len();
             for c in line.chars() {
                 let c = c as u8;
 
@@ -173,7 +156,7 @@ pub mod buffer {
         let mode_line = ModeLine {
             left: file_path.chars().map(|c| c as u8).collect(),
             middle: Vec::new(),
-            right: vec![b'l', b':', b' ', b'0', b' ', b'c', b':', b' ', b'0'],
+            right: get_position_bytes(0, 0),
         };
 
         Buffer {
@@ -195,6 +178,24 @@ pub mod buffer {
         }
     }
 
+    pub fn save_buffer(core: &Core) {
+        let start = std::time::Instant::now();
+
+        use std::io::Write;
+
+        let mut file = std::fs::File::create(core.buffer.file_name.as_ref().unwrap()).unwrap();
+        let mut content = Vec::with_capacity(core.buffer.lines.len() * 80);
+
+        for line in core.buffer.lines.iter() {
+            content.extend_from_slice(&line.content);
+            content.push(b'\n');
+        }
+
+        file.write_all(&content).unwrap();
+        let elapsed = start.elapsed();
+        println!("Time took to save buffer: {} ms", elapsed.as_nanos());
+    }
+
     pub fn get_this_line_or_max(lines: &[Line], i: u32) -> u32 {
         let len = lines.len() as u32;
 
@@ -204,20 +205,6 @@ pub mod buffer {
             i
         }
     }
-
-    // fn parse(number: u32) -> String {
-    //     let mut n = number;
-    //     let mut i = 9;
-    //     while n > 0 {
-    //         let c = n - i;
-    //         n -= n - c - i;
-    //     }
-
-    //     let first = number & 0x000000FF;
-    //     let second = (number & 0x0000FF00) >> 8;
-    //     let third = (number & 0x00FF0000) >> 16;
-    //     let fourth = (number & 0xFF000000) >> 24;
-    // }
 
     pub fn check_offset(core: &mut Core) -> bool {
         let buffer = &mut core.buffer;
@@ -240,11 +227,25 @@ pub mod buffer {
             change_flag = true;
         }
 
-        // let line_number_parse = str::parse(cursor.position.y).unwrap();
-        // let col_number_parse = str::parse(cursor.position.x).unwrap();
-        // core.buffer.mode_line.right =
-
         change_flag
+    }
+
+    fn get_position_bytes(x: u32, y: u32) -> Vec<u8> {
+        let line_number_parse = y.to_string();
+        let col_number_parse = x.to_string();
+
+        let mut string = Vec::new();
+        string.extend_from_slice(&[b'l', b':']);
+        string.extend_from_slice(&line_number_parse.into_bytes());
+        string.extend_from_slice(&[b' ', b'c', b':']);
+        string.extend_from_slice(&col_number_parse.into_bytes());
+
+        string
+    }
+
+    pub fn update_mode_line_right(core: &mut Core) {
+        let cursor = &core.buffer.cursors[core.buffer.main_cursor_index as usize];
+        core.buffer.mode_line.right = get_position_bytes(cursor.x, cursor.y);
     }
 
     pub fn delete_prev_char(core: &mut Core, position_index: usize) {
@@ -280,7 +281,7 @@ pub mod buffer {
         if position.x > line_len {
             if core.buffer.lines.len() > position.y as usize + 1 {
                 position.x = 0;
-                position.y = 0;
+                position.y += 1;
             }
         } else {
             position.x += 1;
@@ -329,11 +330,10 @@ pub mod buffer {
         let indent = core.buffer.lines[position.y as usize].indent;
         let mut vec = vec![b' '; indent as usize];
         vec.extend_from_slice(&core.buffer.lines[position.y as usize].content[position.x as usize..]);
-        println!("indent: {}", indent);
 
         let line = Line {
             content: vec,
-            indent: indent,
+            indent,
         };
 
         position.y += 1;
@@ -490,13 +490,14 @@ pub mod buffer {
 
     fn mode_line_string(chars_per_row: u32, mode_line: &ModeLine) -> String {
         let mut content: String = std::str::from_utf8(&mode_line.left).unwrap().to_owned();
-        let l = chars_per_row as usize / 2 - mode_line.middle.len() / 2;
+        let l = (chars_per_row as usize / 2) - (mode_line.middle.len() / 2);
         let white_space = l - content.len();
 
         content.extend(std::str::from_utf8(&vec![b' '; white_space]));
         content.extend(std::str::from_utf8(&mode_line.middle));
 
         let white_space = chars_per_row as usize - content.len() - mode_line.right.len();
+        content.extend(std::str::from_utf8(&vec![b' '; white_space]));
         content.extend(std::str::from_utf8(&mode_line.right));
 
         content
@@ -564,9 +565,9 @@ fn prev_line(core: &mut Core) {
         buffer::prev_line(core, i);
     }
 
-    if buffer::check_offset(core) {
-        buffer::update_chars(core);
-    }
+    buffer::update_mode_line_right(core);
+    buffer::check_offset(core);
+    buffer::update_chars(core);
 
     core.changed = true;
 }
@@ -576,9 +577,9 @@ fn next_line(core: &mut Core) {
         buffer::next_line(core, i);
     }
 
-    if buffer::check_offset(core) {
-        buffer::update_chars(core);
-    }
+    buffer::update_mode_line_right(core);
+    buffer::check_offset(core);
+    buffer::update_chars(core);
 
     core.changed = true;
 }
@@ -588,9 +589,9 @@ fn prev_char(core: &mut Core) {
         buffer::prev_char(core, i);
     }
 
-    if buffer::check_offset(core) {
-        buffer::update_chars(core);
-    }
+    buffer::update_mode_line_right(core);
+    buffer::check_offset(core);
+    buffer::update_chars(core);
 
     core.changed = true;
 }
@@ -600,9 +601,9 @@ fn next_char(core: &mut Core) {
         buffer::next_char(core, i);
     }
 
-    if buffer::check_offset(core) {
-        buffer::update_chars(core);
-    }
+    buffer::update_mode_line_right(core);
+    buffer::check_offset(core);
+    buffer::update_chars(core);
 
     core.changed = true;
 }
@@ -612,9 +613,9 @@ fn end_of_line(core: &mut Core) {
         buffer::end_of_line(core, i);
     }
 
-    if buffer::check_offset(core) {
-        buffer::update_chars(core);
-    }
+    buffer::update_mode_line_right(core);
+    buffer::check_offset(core);
+    buffer::update_chars(core);
 
     core.changed = true;
 }
@@ -624,9 +625,9 @@ fn start_of_line(core: &mut Core) {
         buffer::start_of_line(core, i);
     }
 
-    if buffer::check_offset(core) {
-        buffer::update_chars(core);
-    }
+    buffer::update_mode_line_right(core);
+    buffer::check_offset(core);
+    buffer::update_chars(core);
 
     core.changed = true;
 }
@@ -658,8 +659,10 @@ fn insert_char_at_current_position(core: &mut Core) {
         buffer::insert_char_at(core, i);
     }
 
+    buffer::update_mode_line_right(core);
     buffer::check_offset(core);
     buffer::update_chars(core);
+
     core.changed = true;
 }
 
@@ -668,6 +671,7 @@ fn insert_new_line(core: &mut Core) {
         buffer::insert_new_line(core, i);
     }
 
+    buffer::update_mode_line_right(core);
     buffer::check_offset(core);
     buffer::update_chars(core);
 
@@ -679,10 +683,15 @@ fn delete_prev_char(core: &mut Core) {
         buffer::delete_prev_char(core, i);
     }
 
+    buffer::update_mode_line_right(core);
     buffer::check_offset(core);
     buffer::update_chars(core);
 
     core.changed = true;
+}
+
+fn save_buffer(core: &mut Core) {
+    buffer::save_buffer(core);
 }
 
 const SHIFT_BIT: u8 = 0x01;
@@ -733,6 +742,7 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
                     b'a' => core.last_function = Some(start_of_line),
                     b'd' => core.last_function = Some(delete_char_at),
                     b'k' => core.last_function = Some(delete_to_line_end),
+                    b's' => core.last_function = Some(save_buffer),
                     _ => {},
                 }
             } else if core.alt_modifier {
@@ -790,6 +800,8 @@ unsafe extern "C" fn toplevel_configure(data: *mut std::ffi::c_void, _: *mut way
         core.window_ratio = core.height as f32 / core.width as f32;
         core.chars_per_coloumn = (1.0 / core.scale) as u32 - 1;
         core.chars_per_row = (1.0 / (core.scale * core.x_ratio * core.window_ratio)) as u32;
+
+        buffer::update_chars(core);
     }
 }
 
@@ -872,7 +884,7 @@ pub fn init(
         window_ratio,
         running: true,
         changed: false,
-        buffer: buffer::buffer_from_file(chars_per_row, chars_per_coloumn, "src/main.rs"),
+        buffer: buffer::buffer_from_file(chars_per_row, chars_per_coloumn, "src/binding/truetype.rs"),
         chars_per_row,
         chars_per_coloumn,
         key_rate: std::time::Duration::from_millis(20),
