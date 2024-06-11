@@ -12,6 +12,9 @@ pub struct Core {
     pub changed: bool,
     pub buffer: buffer::Buffer,
 
+    command_mode: bool,
+    command: Vec<u8>,
+
     scale: f32,
     x_ratio: f32,
     window_ratio: f32,
@@ -77,7 +80,7 @@ pub mod buffer {
         pub file_name: Option<String>,
         pub unique_chars: UniqueChars,
         pub mode_line: ModeLine,
-        main_cursor_index: u32,
+        pub main_cursor_index: u32,
     }
 
     pub struct Position {
@@ -349,7 +352,16 @@ pub mod buffer {
         let chars_inserted = if c == b'\t' {
             let position = &core.buffer.cursors[position_index];
             let current_line = &mut core.buffer.lines[position.y as usize];
-            let indent = TAB_LEN as u32 + current_line.indent;
+            let mut identation_count = 0;
+            for c in current_line.content.iter() {
+                if *c != b' ' {
+                    break;
+                }
+
+                identation_count += 1;
+            }
+
+            let indent = TAB_LEN as u32 + identation_count;
 
             let mut content = vec![b' '; TAB_LEN as usize];
             content.extend_from_slice(&current_line.content);
@@ -463,6 +475,14 @@ pub mod buffer {
 
     //     core.unique_chars.positions[coordinate_to_delete[0] as usize].remove(coordinate_to_delete[1] as usize);
     // }
+    
+    fn command_string(string: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(string.len() + 1);
+        v.push(b':');
+        v.extend_from_slice(string);
+
+        v
+    }
 
     pub fn update_chars(core: &mut Core) {
         let line_max = get_this_line_or_max(&core.buffer.lines, core.buffer.offset.y + core.chars_per_coloumn);
@@ -479,26 +499,37 @@ pub mod buffer {
                 core.buffer.unique_chars.positions[c].push([j as u8, i as u8]);
             }
         }
+        
+        let mode_line_content = if core.command_mode {
+            command_string(&core.command)
+        } else {
+            mode_line_string(core.chars_per_row, &core.buffer.mode_line)
+        };
 
-        let mode_line_content = mode_line_string(core.chars_per_row, &core.buffer.mode_line);
-
-        for (j, u) in mode_line_content.chars().enumerate() {
-            let c = u as usize - 32;
+        for (j, u) in mode_line_content.iter().enumerate() {
+            let c = *u as usize - 32;
             core.buffer.unique_chars.positions[c].push([j as u8, core.chars_per_coloumn as u8]);
         }
     }
 
-    fn mode_line_string(chars_per_row: u32, mode_line: &ModeLine) -> String {
-        let mut content: String = std::str::from_utf8(&mode_line.left).unwrap().to_owned();
+    fn mode_line_string(chars_per_row: u32, mode_line: &ModeLine) -> Vec<u8> {
+        let mut content = Vec::new();
+        content.extend_from_slice(&mode_line.left);
+//        let mut content: String = std::str::from_utf8(&mode_line.left).unwrap().to_owned();
         let l = (chars_per_row as usize / 2) - (mode_line.middle.len() / 2);
+
+        if l < content.len() {
+            return content;
+        }
+
         let white_space = l - content.len();
 
-        content.extend(std::str::from_utf8(&vec![b' '; white_space]));
-        content.extend(std::str::from_utf8(&mode_line.middle));
+        content.extend_from_slice(&vec![b' '; white_space]);
+        content.extend_from_slice(&mode_line.middle);
 
         let white_space = chars_per_row as usize - content.len() - mode_line.right.len();
-        content.extend(std::str::from_utf8(&vec![b' '; white_space]));
-        content.extend(std::str::from_utf8(&mode_line.right));
+        content.extend_from_slice(&vec![b' '; white_space]);
+        content.extend_from_slice(&mode_line.right);
 
         content
     }
@@ -517,8 +548,8 @@ pub mod buffer {
 
         let mode_line_content = mode_line_string(chars_per_row, mode_line);
 
-        for (j, u) in mode_line_content.chars().enumerate() {
-            let c = u as usize - 32;
+        for (j, u) in mode_line_content.iter().enumerate() {
+            let c = *u as usize - 32;
             positions[c].push([j as u8, chars_per_coloumn as u8]);
         }
 
@@ -558,6 +589,45 @@ pub fn update(core: &mut Core) {
             }
         }
     }
+}
+
+fn page_down(core: &mut Core) {
+    let cursor = &mut core.buffer.cursors[core.buffer.main_cursor_index as usize];
+    let len = core.buffer.lines.len() as u32;
+
+    if core.buffer.offset.y + core.chars_per_row - 1 >= len {
+        core.buffer.offset.y = len - core.chars_per_coloumn;
+    } else {
+        core.buffer.offset.y += core.chars_per_coloumn - 1;
+    }
+
+    if cursor.y < core.buffer.offset.y {
+        cursor.y = core.buffer.offset.y;
+    }
+
+    cursor.x = 0;
+    buffer::update_mode_line_right(core);
+    buffer::update_chars(core);
+    core.changed = true;
+}
+
+fn page_up(core: &mut Core) {
+    let cursor = &mut core.buffer.cursors[core.buffer.main_cursor_index as usize];
+
+    if core.buffer.offset.y as i32 - core.chars_per_coloumn as i32 - 1 < 0 {
+        core.buffer.offset.y = 0;
+    } else {
+        core.buffer.offset.y -= core.chars_per_coloumn - 1;
+    }
+
+    if cursor.y > core.buffer.offset.y + core.chars_per_coloumn - 1 {
+        cursor.y = core.chars_per_coloumn + core.buffer.offset.y - 1;
+    }
+    
+    cursor.x = 0;
+    buffer::update_mode_line_right(core);
+    buffer::update_chars(core);
+    core.changed = true;
 }
 
 fn prev_line(core: &mut Core) {
@@ -666,6 +736,13 @@ fn insert_char_at_current_position(core: &mut Core) {
     core.changed = true;
 }
 
+fn insert_command_char(core: &mut Core) {
+    let c = core.last_inserted_char;
+    core.command.push(c);
+    buffer::update_chars(core);
+    core.changed = true;
+}
+
 fn insert_new_line(core: &mut Core) {
     for i in 0..core.buffer.cursors.len() {
         buffer::insert_new_line(core, i);
@@ -678,6 +755,12 @@ fn insert_new_line(core: &mut Core) {
     core.changed = true;
 }
 
+fn delete_prev_command_char(core: &mut Core) {
+    core.command.pop();
+    buffer::update_chars(core);
+    core.changed = true;
+}
+
 fn delete_prev_char(core: &mut Core) {
     for i in 0..core.buffer.cursors.len() {
         buffer::delete_prev_char(core, i);
@@ -687,6 +770,18 @@ fn delete_prev_char(core: &mut Core) {
     buffer::check_offset(core);
     buffer::update_chars(core);
 
+    core.changed = true;
+}
+
+fn active_command_mode(core: &mut Core) {
+    core.command_mode = true;
+    buffer::update_chars(core);
+    core.changed = true;
+}
+
+fn deactive_command_mode(core: &mut Core) {
+    core.command_mode = false;
+    buffer::update_chars(core);
     core.changed = true;
 }
 
@@ -733,6 +828,10 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
             };
 
             if core.control_modifier {
+                if core.command_mode {
+                    return;
+                }
+
                 match c {
                     b'p' => core.last_function = Some(prev_line),
                     b'n' => core.last_function = Some(next_line),
@@ -743,20 +842,41 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
                     b'd' => core.last_function = Some(delete_char_at),
                     b'k' => core.last_function = Some(delete_to_line_end),
                     b's' => core.last_function = Some(save_buffer),
+                    b'v' => core.last_function = Some(page_down),
                     _ => {},
                 }
             } else if core.alt_modifier {
+                if core.command_mode {
+                    return;
+                }
+
                 match c {
                     // b'f' => core.last_function = Some(next_word),
+                    b'v' => core.last_function = Some(page_up),
+                    b'x' => core.last_function = Some(active_command_mode),
                     _ => {},
                 }
             } else {
-                core.last_function = Some(insert_char_at_current_position);
                 core.last_inserted_char = c;
+                if core.command_mode {
+                    core.last_function = Some(insert_command_char);
+                } else {
+                    core.last_function = Some(insert_char_at_current_position);
+                }
             }
         } else if code == ENTER {
+            if core.command_mode {
+                deactive_command_mode(core);
+                return;
+            }
+
             core.last_function = Some(insert_new_line);
         } else if code == BACKSPACE {
+            if core.command_mode {
+                core.last_function = Some(delete_prev_command_char);
+                return;
+            }
+
             core.last_function = Some(delete_prev_char);
         }
 
@@ -884,7 +1004,9 @@ pub fn init(
         window_ratio,
         running: true,
         changed: false,
-        buffer: buffer::buffer_from_file(chars_per_row, chars_per_coloumn, "src/binding/truetype.rs"),
+        command_mode: false,
+        command: Vec::new(),
+        buffer: buffer::buffer_from_file(chars_per_row, chars_per_coloumn, "src/renderer/wayland.rs"),
         chars_per_row,
         chars_per_coloumn,
         key_rate: std::time::Duration::from_millis(20),
