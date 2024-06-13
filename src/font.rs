@@ -42,20 +42,24 @@ fn add_bitmap_to_atlas(
     }
 }
 
-const PADDING: u32 = 2;
+const PADDING: u32 = 3;
+
+fn get_monospaced_advance(face: &freetype::Face) -> u32 {
+    face.load_char(b'a' as usize, freetype::face::LoadFlag::RENDER).unwrap();
+    let a = face.glyph();
+    let advance = a.advance();
+    advance.x as u32 >> 6
+}
 
 pub fn init(path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFont, ParseError> {
     let lib = freetype::Library::init().unwrap();
     let face = lib.new_face(path, 0).unwrap();
 
-    face.set_pixel_sizes(size as u32, 0).unwrap();
+    face.set_char_size(size as isize * 72, 0, 72, 72).unwrap();
 
-    let scale = size as f32 / face.height() as f32;
+    let scale = size as f32 / face.em_size() as f32;
     let ascender = (face.ascender() as f32 * scale).round() as i32;
-    let max_advance = (face.max_advance_width() as f32 * scale).round() as u32;
-    let line_height = (scale * face.height() as f32) as u32;
-
-    let x_ratio = max_advance as f32 / line_height as f32;
+    let max_advance = get_monospaced_advance(&face);
 
     let (glyphs_per_row, line_count) = {
         let len = code_points.len() as f32;
@@ -63,14 +67,15 @@ pub fn init(path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFont, Pa
         ((len as f32 / height).ceil() as u32, height as u32)
     };
 
+    let line_height = (scale * face.height() as f32) as u32;
     let texture_width = (glyphs_per_row + PADDING) * max_advance;
     let texture_height = (line_height + PADDING) * line_count;
 
     let mut metrics = Vec::new();
     let mut texture: Vec<u8> = vec![0; (texture_width * texture_height) as usize];
 
-    let mut x_offset = 0;
-    let mut y_offset = 0;
+    let mut x_offset = PADDING;
+    let mut y_offset = PADDING;
     let mut i = 0;
 
     for code_point in code_points.iter() {
@@ -114,6 +119,8 @@ pub fn init(path: &str, code_points: &[u8], size: u8) -> Result<TrueTypeFont, Pa
             x_offset = 0;
         }
     }
+
+    let x_ratio = max_advance as f32 / line_height as f32;
 
     Ok(TrueTypeFont {
         texture_atlas: texture,

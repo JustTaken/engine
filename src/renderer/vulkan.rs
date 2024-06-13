@@ -698,10 +698,10 @@ pub fn graphics_pipeline(device: &Device, instance: &Instance, width: u32, heigh
     };
 
     let color_blend_attachment = vulkan::PipelineColorBlendAttachmentState {
-        blendEnable: vulkan::FALSE,
+        blendEnable: vulkan::TRUE,
         colorWriteMask: vulkan::COLOR_COMPONENT_R_BIT | vulkan::COLOR_COMPONENT_G_BIT | vulkan::COLOR_COMPONENT_B_BIT | vulkan::COLOR_COMPONENT_A_BIT,
-        srcColorBlendFactor: vulkan::BLEND_FACTOR_ONE,
-        dstColorBlendFactor: vulkan::BLEND_FACTOR_ZERO,
+        srcColorBlendFactor: vulkan::BLEND_FACTOR_SRC_ALPHA,
+        dstColorBlendFactor: vulkan::BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         srcAlphaBlendFactor: vulkan::BLEND_FACTOR_ONE,
         dstAlphaBlendFactor: vulkan::BLEND_FACTOR_ZERO,
         colorBlendOp: vulkan::BLEND_OP_ADD,
@@ -1846,8 +1846,8 @@ fn record_cursor_secondary_command_buffer(
     unsafe { (device.vkCmdBindVertexBuffers)(command_buffer, 0, 1, &vertex_buffer as *const *mut vulkan::Buffer, [0].as_ptr()) };
 
     for cursor in buffer.cursors.iter() {
-        let xpos = cursor.x - buffer.offset.x;
-        let ypos = cursor.y - buffer.offset.y;
+        let xpos = cursor.position.x - buffer.offset.x;
+        let ypos = cursor.position.y - buffer.offset.y;
 
         unsafe { (device.vkCmdPushConstants)(command_buffer, graphics_pipeline.layout, vulkan::SHADER_STAGE_VERTEX_BIT, 0, std::mem::size_of::<f32>() as u32 * 2, std::mem::transmute::<*const f32, *const std::ffi::c_void>([xpos as f32 * 2.0 + 1.0, ypos as f32 * 2.0 + 1.0].as_ptr())) };
         unsafe { (device.vkCmdDrawIndexed)(command_buffer, 6, 1, 0, 0, 0) };

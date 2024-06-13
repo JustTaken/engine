@@ -1,4 +1,5 @@
 use crate::binding::wayland;
+pub mod buffer;
 
 pub struct Core {
     pub display: *mut wayland::wl_display,
@@ -10,7 +11,10 @@ pub struct Core {
     pub height: u32,
 
     pub changed: bool,
-    pub buffer: buffer::Buffer,
+    pub buffers: Vec<buffer::Buffer>,
+    pub main_buffer_index: u32,
+
+    completion_lines: Vec<buffer::Line>,
 
     command_mode: bool,
     command: Vec<u8>,
@@ -55,522 +59,6 @@ pub enum WaylandError {
     NotAscci,
 }
 
-pub mod buffer {
-    use super::Core;
-
-    pub struct Line {
-        pub content: Vec<u8>,
-        pub indent: u32,
-    }
-
-    pub struct UniqueChars {
-        pub positions: Vec<Vec<[u8; 2]>>,
-    }
-
-    pub struct ModeLine {
-        left: Vec<u8>,
-        middle: Vec<u8>,
-        right: Vec<u8>,
-    }
-
-    pub struct Buffer {
-        pub cursors: Vec<Position>,
-        pub offset: Offset,
-        pub lines: Vec<Line>,
-        pub file_name: Option<String>,
-        pub unique_chars: UniqueChars,
-        pub mode_line: ModeLine,
-        pub main_cursor_index: u32,
-    }
-
-    pub struct Position {
-        pub x: u32,
-        pub y: u32,
-    }
-
-    pub struct Offset {
-        pub x: u32,
-        pub y: u32,
-    }
-
-    pub fn empty_buffer(chars_per_row: u32, chars_per_coloumn: u32) -> Buffer {
-        let mode_line = ModeLine {
-            left: vec![b'm', b'a', b'c', b'o', b'n', b'h', b'a'],
-            middle: Vec::new(),
-            right: Vec::new(),
-        };
-        let lines = vec![
-            Line {
-                content: Vec::new(),
-                indent: 0,
-            }
-        ];
-        Buffer {
-            file_name: None,
-            offset: Offset {
-                x: 0,
-                y: 0,
-            },
-            main_cursor_index: 0,
-            unique_chars: unique_chars_from_lines(chars_per_row, chars_per_coloumn, &lines, &mode_line),
-            lines,
-            mode_line,
-            cursors: vec![
-                Position {
-                    x: 0,
-                    y: 0,
-                }
-            ],
-        }
-    }
-
-    pub fn buffer_from_file(chars_per_row: u32, chars_per_coloumn: u32, file_path: &str) -> Buffer {
-        let content = std::fs::read_to_string(file_path).unwrap();
-
-        let mut lines: Vec<Line> = Vec::with_capacity(30);
-        for line in content.lines() {
-
-            let mut initial_spacing_count = 0;
-            let mut first_non_blank_char_flag = false;
-
-            let mut current_line = Line {
-                content: Vec::with_capacity(30),
-                indent: 0,
-            };
-
-            for c in line.chars() {
-                let c = c as u8;
-
-                if !first_non_blank_char_flag {
-                    if c == b' ' {
-                        initial_spacing_count += 1;
-                    } else {
-                        first_non_blank_char_flag = true;
-                    }
-                }
-
-                current_line.content.push(c);
-            }
-
-            current_line.indent = initial_spacing_count;
-            lines.push(current_line);
-        }
-
-        let mode_line = ModeLine {
-            left: file_path.chars().map(|c| c as u8).collect(),
-            middle: Vec::new(),
-            right: get_position_bytes(0, 0),
-        };
-
-        Buffer {
-            file_name: Some(file_path.to_owned()),
-            offset: Offset {
-                x: 0,
-                y: 0,
-            },
-            main_cursor_index: 0,
-            unique_chars: unique_chars_from_lines(chars_per_row, chars_per_coloumn, &lines, &mode_line),
-            lines,
-            mode_line,
-            cursors: vec![
-                Position {
-                    x: 0,
-                    y: 0,
-                }
-            ],
-        }
-    }
-
-    pub fn save_buffer(core: &Core) {
-        let start = std::time::Instant::now();
-
-        use std::io::Write;
-
-        let mut file = std::fs::File::create(core.buffer.file_name.as_ref().unwrap()).unwrap();
-        let mut content = Vec::with_capacity(core.buffer.lines.len() * 80);
-
-        for line in core.buffer.lines.iter() {
-            content.extend_from_slice(&line.content);
-            content.push(b'\n');
-        }
-
-        file.write_all(&content).unwrap();
-        let elapsed = start.elapsed();
-        println!("Time took to save buffer: {} ms", elapsed.as_nanos());
-    }
-
-    pub fn get_this_line_or_max(lines: &[Line], i: u32) -> u32 {
-        let len = lines.len() as u32;
-
-        if len < i {
-            len
-        } else {
-            i
-        }
-    }
-
-    pub fn check_offset(core: &mut Core) -> bool {
-        let buffer = &mut core.buffer;
-        let cursor = &buffer.cursors[buffer.main_cursor_index as usize];
-        let mut change_flag = false;
-
-        if cursor.y >= buffer.offset.y + core.chars_per_coloumn {
-            buffer.offset.y = cursor.y - core.chars_per_coloumn + 1;
-            change_flag = true;
-        } else if cursor.y < buffer.offset.y {
-            buffer.offset.y = cursor.y;
-            change_flag = true;
-        }
-
-        if cursor.x > buffer.offset.x + core.chars_per_row {
-            buffer.offset.x = cursor.x - core.chars_per_row;
-            change_flag = true;
-        } else if cursor.x < buffer.offset.x {
-            buffer.offset.x = cursor.x;
-            change_flag = true;
-        }
-
-        change_flag
-    }
-
-    fn get_position_bytes(x: u32, y: u32) -> Vec<u8> {
-        let line_number_parse = y.to_string();
-        let col_number_parse = x.to_string();
-
-        let mut string = Vec::new();
-        string.extend_from_slice(&[b'l', b':']);
-        string.extend_from_slice(&line_number_parse.into_bytes());
-        string.extend_from_slice(&[b' ', b'c', b':']);
-        string.extend_from_slice(&col_number_parse.into_bytes());
-
-        string
-    }
-
-    pub fn update_mode_line_right(core: &mut Core) {
-        let cursor = &core.buffer.cursors[core.buffer.main_cursor_index as usize];
-        core.buffer.mode_line.right = get_position_bytes(cursor.x, cursor.y);
-    }
-
-    pub fn delete_prev_char(core: &mut Core, position_index: usize) {
-        let position = &mut core.buffer.cursors[position_index];
-        if position.x == 0 {
-            if position.y > 0 {
-                position.y -= 1;
-                position.x = core.buffer.lines[position.y as usize].content.len() as u32;
-
-                let next_line = core.buffer.lines.remove(position.y as usize + 1);
-                core.buffer.lines[position.y as usize].content.extend_from_slice(&next_line.content);
-            }
-        } else {
-            position.x -= 1;
-            core.buffer.lines[position.y as usize].content.remove(position.x as usize);
-        }
-    }
-
-    pub fn start_of_line(core: &mut Core, position_index: usize) {
-        let position = &mut core.buffer.cursors[position_index];
-        position.x = 0;
-    }
-
-    pub fn end_of_line(core: &mut Core, position_index: usize) {
-        let position = &mut core.buffer.cursors[position_index];
-        position.x = core.buffer.lines[position.y as usize].content.len() as u32;
-    }
-
-    pub fn next_char(core: &mut Core, position_index: usize) {
-        let position = &mut core.buffer.cursors[position_index];
-        let line_len = core.buffer.lines[position.y as usize].content.len() as u32;
-
-        if position.x > line_len {
-            if core.buffer.lines.len() > position.y as usize + 1 {
-                position.x = 0;
-                position.y += 1;
-            }
-        } else {
-            position.x += 1;
-        }
-    }
-
-    pub fn prev_char(core: &mut Core, position_index: usize) {
-        let position = &mut core.buffer.cursors[position_index];
-        if position.x == 0 {
-            if position.y > 0 {
-                position.y -= 1;
-                position.x = core.buffer.lines[position.y as usize].content.len() as u32;
-            }
-        } else {
-            position.x -= 1;
-        }
-    }
-
-    pub fn prev_line(core: &mut Core, position_index: usize) {
-        let position = &mut core.buffer.cursors[position_index];
-        if position.y > 0 {
-            position.y -= 1;
-
-            let line_len = core.buffer.lines[position.y as usize].content.len() as u32;
-            if position.x > line_len {
-                position.x = line_len;
-            }
-        }
-    }
-
-    pub fn next_line(core: &mut Core, position_index: usize) {
-        let position = &mut core.buffer.cursors[position_index];
-
-        if core.buffer.lines.len() > position.y as usize + 1 {
-            position.y += 1;
-
-            let line_len = core.buffer.lines[position.y as usize].content.len() as u32;
-            if position.x > line_len {
-                position.x = line_len;
-            }
-        }
-    }
-
-    pub fn insert_new_line(core: &mut Core, position_index: usize) {
-        let position = &mut core.buffer.cursors[position_index];
-        let indent = core.buffer.lines[position.y as usize].indent;
-        let mut vec = vec![b' '; indent as usize];
-        vec.extend_from_slice(&core.buffer.lines[position.y as usize].content[position.x as usize..]);
-
-        let line = Line {
-            content: vec,
-            indent,
-        };
-
-        position.y += 1;
-        core.buffer.lines.insert(position.y as usize, line);
-        core.buffer.lines[position.y as usize - 1].content.truncate(position.x as usize);
-        position.x = indent;
-    }
-
-    const TAB_LEN: usize = 4;
-
-    pub fn insert_char_at(core: &mut Core, position_index: usize) {
-        let c = core.last_inserted_char;
-        let chars_inserted = if c == b'\t' {
-            let position = &core.buffer.cursors[position_index];
-            let current_line = &mut core.buffer.lines[position.y as usize];
-            let mut identation_count = 0;
-            for c in current_line.content.iter() {
-                if *c != b' ' {
-                    break;
-                }
-
-                identation_count += 1;
-            }
-
-            let indent = TAB_LEN as u32 + identation_count;
-
-            let mut content = vec![b' '; TAB_LEN as usize];
-            content.extend_from_slice(&current_line.content);
-
-            *current_line = Line {
-                content,
-                indent,
-            };
-
-            TAB_LEN
-        } else {
-        let position = &core.buffer.cursors[position_index];
-            core.buffer.lines[position.y as usize].content.insert(position.x as usize, c);
-            1
-        };
-
-        update_chars(core);
-        core.buffer.cursors[position_index].x += chars_inserted as u32;
-    }
-
-    pub fn delete_char_at(core: &mut Core, position_index: usize) {
-        let position = &mut core.buffer.cursors[position_index];
-        if core.buffer.lines[position.y as usize].content.len() <= position.x as usize {
-            if core.buffer.lines.len() > position.y as usize + 1 {
-                let next_line = core.buffer.lines.remove(position.y as usize + 1);
-                core.buffer.lines[position.y as usize].content.extend_from_slice(&next_line.content);
-            }
-        } else {
-            core.buffer.lines[position.y as usize].content.remove(position.x as usize);
-        }
-    }
-
-    pub fn delete_to_line_end(core: &mut Core, position_index: usize) {
-        let position = &mut core.buffer.cursors[position_index];
-        core.buffer.lines[position.y as usize].content.drain(position.x as usize..);
-    }
-
-    // fn insert_unique_tab(core: &mut Core, position_index: usize) {
-    //     let pos = &core.buffer.cursors[position_index];
-    //     let content = &core.buffer.lines[pos.y as usize].content;
-    //     let relative_line = pos.y - core.buffer.offset.y;
-    //     let line_offset = relative_line as usize * core.chars_per_row as usize;
-    //     let mut max_col = content.len() - core.buffer.offset.x as usize - 1;
-
-    //     if max_col + 4 >= core.chars_per_row as usize {
-    //         max_col = core.chars_per_row as usize - 4;
-    //     }
-
-    //     for j in 0..max_col {
-    //         let coordinates = core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize - 1];
-    //         core.buffer.unique_chars.positions[coordinates[0] as usize][coordinates[1] as usize][0] += TAB_LEN as u8;
-    //         core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize + TAB_LEN] = core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize - 1];
-    //     }
-    // }
-
-    // fn insert_unique_char(core: &mut Core, position_index: usize) {
-    //     let pos = &core.buffer.cursors[position_index];
-    //     let content = &core.buffer.lines[pos.y as usize].content;
-    //     let c = content[pos.x as usize] - 32;
-    //     let line_len = content.len();
-
-    //     let relative_line = pos.y - core.buffer.offset.y;
-    //     let relative_coloumn = pos.x - core.buffer.offset.x;
-    //     let line_offset = relative_line as usize * core.chars_per_row as usize;
-
-    //     if pos.x + 1 < line_len as u32 {
-    //         let max_col = line_len - core.buffer.offset.x as usize - 1;
-
-    //         for j in 0..max_col as u32 - relative_coloumn {
-    //             let coordinates = core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize - 1];
-
-    //             core.buffer.unique_chars.positions[coordinates[0] as usize][coordinates[1] as usize][0] += 1;
-    //             core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize] = core.buffer.unique_chars.screen_coordinates[line_offset + max_col - j as usize - 1];
-    //         }
-    //     }
-
-    //     let index = core.buffer.unique_chars.positions[c as usize].len() as u8;
-    //     core.buffer.unique_chars.positions[c as usize].push([relative_coloumn as u8, relative_line as u8]);
-    //     core.buffer.unique_chars.screen_coordinates[line_offset + relative_coloumn as usize] = [c, index];
-    // }
-
-    // pub fn delete_unique_char(core: &mut Core, position_index: usize) {
-    //     let pos = &core.buffer.cursors[position_index];
-    //     let content = &core.buffer.lines[pos.y as usize].content;
-
-    //     let line_len = content.len();
-    //     let relative_line = pos.y - core.buffer.offset.y;
-    //     let relative_coloumn = pos.x - core.buffer.offset.x;
-    //     let line_offset = relative_line as usize * core.chars_per_row as usize;
-    //     let max_col = line_len - core.buffer.offset.x as usize - 1;
-
-    //     if pos.x + 1 < line_len as u32 {
-    //         for j in relative_coloumn + 1..max_col as u32 {
-    //             let coordinates = core.unique_chars.screen_coordinates[line_offset + j as usize];
-
-    //             core.unique_chars.positions[coordinates[0] as usize][coordinates[1] as usize][0] -= 1;
-    //             core.unique_chars.screen_coordinates[line_offset + j as usize ] = core.unique_chars.screen_coordinates[line_offset + j as usize + 1];
-    //         }
-    //     }
-
-    //     let coordinate_to_delete = core.unique_chars.screen_coordinates[line_offset + relative_coloumn as usize];
-    //     let positions = &core.unique_chars.positions[coordinate_to_delete[0] as usize];
-
-    //     if positions.len() <= coordinate_to_delete[1] as usize {
-    //         return;
-    //     }
-
-    //     for position in positions[coordinate_to_delete[1] as usize + 1..].iter() {
-    //         core.unique_chars.screen_coordinates[(position[1] as u32 * core.chars_per_row + position[0] as u32) as usize][1] -= 1;
-    //     }
-
-    //     core.unique_chars.positions[coordinate_to_delete[0] as usize].remove(coordinate_to_delete[1] as usize);
-    // }
-    
-    fn command_string(string: &[u8]) -> Vec<u8> {
-        let mut v = Vec::with_capacity(string.len() + 1);
-        v.push(b':');
-        v.extend_from_slice(string);
-
-        v
-    }
-
-    pub fn update_chars(core: &mut Core) {
-        let line_max = get_this_line_or_max(&core.buffer.lines, core.buffer.offset.y + core.chars_per_coloumn);
-        let lines = &core.buffer.lines[core.buffer.offset.y as usize..line_max as usize];
-
-        for i in 0..core.buffer.unique_chars.positions.len() {
-            core.buffer.unique_chars.positions[i].clear();
-        }
-
-        for (i, line) in lines.iter().enumerate() {
-            for (j, u) in get_slice(&line.content, core.buffer.offset.x, core.chars_per_row + core.buffer.offset.x).iter().enumerate() {
-                let c = *u as usize - 32;
-
-                core.buffer.unique_chars.positions[c].push([j as u8, i as u8]);
-            }
-        }
-        
-        let mode_line_content = if core.command_mode {
-            command_string(&core.command)
-        } else {
-            mode_line_string(core.chars_per_row, &core.buffer.mode_line)
-        };
-
-        for (j, u) in mode_line_content.iter().enumerate() {
-            let c = *u as usize - 32;
-            core.buffer.unique_chars.positions[c].push([j as u8, core.chars_per_coloumn as u8]);
-        }
-    }
-
-    fn mode_line_string(chars_per_row: u32, mode_line: &ModeLine) -> Vec<u8> {
-        let mut content = Vec::new();
-        content.extend_from_slice(&mode_line.left);
-//        let mut content: String = std::str::from_utf8(&mode_line.left).unwrap().to_owned();
-        let l = (chars_per_row as usize / 2) - (mode_line.middle.len() / 2);
-
-        if l < content.len() {
-            return content;
-        }
-
-        let white_space = l - content.len();
-
-        content.extend_from_slice(&vec![b' '; white_space]);
-        content.extend_from_slice(&mode_line.middle);
-
-        let white_space = chars_per_row as usize - content.len() - mode_line.right.len();
-        content.extend_from_slice(&vec![b' '; white_space]);
-        content.extend_from_slice(&mode_line.right);
-
-        content
-    }
-
-    pub fn unique_chars_from_lines(chars_per_row: u32, chars_per_coloumn: u32, lines: &[Line], mode_line: &ModeLine) -> UniqueChars {
-        let line_max = get_this_line_or_max(lines, chars_per_coloumn);
-        let lines = &lines[0..line_max as usize];
-
-        let mut positions: Vec<Vec<[u8; 2]>> = vec![Vec::with_capacity(10); 95];
-        for (i, line) in lines.iter().enumerate() {
-            for (j, u) in get_slice(&line.content, 0, chars_per_row).iter().enumerate() {
-                let c = *u as usize - 32;
-                positions[c].push([j as u8, i as u8]);
-            }
-        }
-
-        let mode_line_content = mode_line_string(chars_per_row, mode_line);
-
-        for (j, u) in mode_line_content.iter().enumerate() {
-            let c = *u as usize - 32;
-            positions[c].push([j as u8, chars_per_coloumn as u8]);
-        }
-
-        UniqueChars {
-            positions
-        }
-    }
-
-    fn get_slice(line: &[u8], offset: u32, size: u32) -> &[u8] {
-        let len = line.len() as u32;
-
-        if len < offset {
-            &[]
-        } else if len < size {
-            &line[offset as usize..len as usize]
-        } else {
-            &line[offset as usize..size as usize]
-        }
-    }
-}
-
 pub fn set_unchanged(core: &mut Core) {
     core.changed = false;
 }
@@ -592,46 +80,49 @@ pub fn update(core: &mut Core) {
 }
 
 fn page_down(core: &mut Core) {
-    let cursor = &mut core.buffer.cursors[core.buffer.main_cursor_index as usize];
-    let len = core.buffer.lines.len() as u32;
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    let position = &mut buffer.cursors[buffer.main_cursor_index as usize].position;
+    let len = buffer.lines.len() as u32;
 
-    if core.buffer.offset.y + core.chars_per_row - 1 >= len {
-        core.buffer.offset.y = len - core.chars_per_coloumn;
+    if buffer.offset.y + core.chars_per_row - 1 >= len {
+        buffer.offset.y = len - core.chars_per_coloumn;
     } else {
-        core.buffer.offset.y += core.chars_per_coloumn - 1;
+        buffer.offset.y += core.chars_per_coloumn - 1;
     }
 
-    if cursor.y < core.buffer.offset.y {
-        cursor.y = core.buffer.offset.y;
+    if position.y < buffer.offset.y {
+        position.y = buffer.offset.y;
     }
 
-    cursor.x = 0;
+    position.x = 0;
     buffer::update_mode_line_right(core);
     buffer::update_chars(core);
     core.changed = true;
 }
 
 fn page_up(core: &mut Core) {
-    let cursor = &mut core.buffer.cursors[core.buffer.main_cursor_index as usize];
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    let position = &mut buffer.cursors[buffer.main_cursor_index as usize].position;
 
-    if core.buffer.offset.y as i32 - core.chars_per_coloumn as i32 - 1 < 0 {
-        core.buffer.offset.y = 0;
+    if buffer.offset.y as i32 - core.chars_per_coloumn as i32 - 1 < 0 {
+        buffer.offset.y = 0;
     } else {
-        core.buffer.offset.y -= core.chars_per_coloumn - 1;
+        buffer.offset.y -= core.chars_per_coloumn - 1;
     }
 
-    if cursor.y > core.buffer.offset.y + core.chars_per_coloumn - 1 {
-        cursor.y = core.chars_per_coloumn + core.buffer.offset.y - 1;
+    if position.y > buffer.offset.y + core.chars_per_coloumn - 1 {
+        position.y = core.chars_per_coloumn + buffer.offset.y - 1;
     }
-    
-    cursor.x = 0;
+
+    position.x = 0;
     buffer::update_mode_line_right(core);
     buffer::update_chars(core);
     core.changed = true;
 }
 
 fn prev_line(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
         buffer::prev_line(core, i);
     }
 
@@ -643,7 +134,8 @@ fn prev_line(core: &mut Core) {
 }
 
 fn next_line(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
         buffer::next_line(core, i);
     }
 
@@ -655,7 +147,8 @@ fn next_line(core: &mut Core) {
 }
 
 fn prev_char(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
         buffer::prev_char(core, i);
     }
 
@@ -667,7 +160,8 @@ fn prev_char(core: &mut Core) {
 }
 
 fn next_char(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
         buffer::next_char(core, i);
     }
 
@@ -679,7 +173,8 @@ fn next_char(core: &mut Core) {
 }
 
 fn end_of_line(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
         buffer::end_of_line(core, i);
     }
 
@@ -691,7 +186,8 @@ fn end_of_line(core: &mut Core) {
 }
 
 fn start_of_line(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
         buffer::start_of_line(core, i);
     }
 
@@ -703,7 +199,8 @@ fn start_of_line(core: &mut Core) {
 }
 
 fn delete_char_at(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
         buffer::delete_char_at(core, i);
     }
 
@@ -714,7 +211,8 @@ fn delete_char_at(core: &mut Core) {
 }
 
 fn delete_to_line_end(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
         buffer::delete_to_line_end(core, i);
     }
 
@@ -725,8 +223,43 @@ fn delete_to_line_end(core: &mut Core) {
 }
 
 fn insert_char_at_current_position(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
         buffer::insert_char_at(core, i);
+    }
+
+    buffer::update_mode_line_right(core);
+    buffer::check_offset(core);
+    buffer::update_chars(core);
+
+    core.changed = true;
+}
+
+fn delete_to_command_end(core: &mut Core) {
+    if core.buffers[core.main_buffer_index as usize].cursors[1].position.x < core.command.len() as u32 + 1 {
+        core.command.drain(core.buffers[core.main_buffer_index as usize].cursors[1].position.x as usize - 1..);
+        buffer::update_chars(core);
+        core.changed = true;
+    }
+}
+
+fn insert_new_line(core: &mut Core) {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
+        buffer::insert_new_line(core, i);
+    }
+
+    buffer::update_mode_line_right(core);
+    buffer::check_offset(core);
+    buffer::update_chars(core);
+
+    core.changed = true;
+}
+
+fn delete_prev_char(core: &mut Core) {
+    let buffer = &mut core.buffers[core.main_buffer_index as usize];
+    for i in 0..buffer.cursors.len() {
+        buffer::delete_prev_char(core, i);
     }
 
     buffer::update_mode_line_right(core);
@@ -738,49 +271,101 @@ fn insert_char_at_current_position(core: &mut Core) {
 
 fn insert_command_char(core: &mut Core) {
     let c = core.last_inserted_char;
-    core.command.push(c);
-    buffer::update_chars(core);
-    core.changed = true;
-}
-
-fn insert_new_line(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
-        buffer::insert_new_line(core, i);
+    if c == b'\t' {
+        let completions: Vec<Vec<u8>> = core.buffers.iter().map(|b| b.file_name.clone().unwrap()).collect();
+        buffer::show_completion_box(core, completions);
+    } else {
+        core.command.insert(core.buffers[core.main_buffer_index as usize].cursors[1].position.x as usize - 1, c);
+        core.buffers[core.main_buffer_index as usize].cursors[1].position.x += 1;
+        buffer::update_chars(core);
     }
-
-    buffer::update_mode_line_right(core);
-    buffer::check_offset(core);
-    buffer::update_chars(core);
 
     core.changed = true;
 }
 
 fn delete_prev_command_char(core: &mut Core) {
-    core.command.pop();
-    buffer::update_chars(core);
-    core.changed = true;
+    if let Some(_) = core.command.pop() {
+        core.buffers[core.main_buffer_index as usize].cursors[1].position.x -= 1;
+        buffer::update_chars(core);
+        core.changed = true;
+    }
 }
 
-fn delete_prev_char(core: &mut Core) {
-    for i in 0..core.buffer.cursors.len() {
-        buffer::delete_prev_char(core, i);
+fn prev_command_char(core: &mut Core) {
+    if core.buffers[core.main_buffer_index as usize].cursors[1].position.x > 0 {
+        core.buffers[core.main_buffer_index as usize].cursors[1].position.x -= 1;
+        buffer::update_chars(core);
+        core.changed = true;
+    };
+}
+
+fn next_command_char(core: &mut Core) {
+    if core.buffers[core.main_buffer_index as usize].cursors[1].position.x < core.command.len() as u32 + 1 {
+        core.buffers[core.main_buffer_index as usize].cursors[1].position.x += 1;
+        buffer::update_chars(core);
+        core.changed = true;
     }
+}
 
-    buffer::update_mode_line_right(core);
-    buffer::check_offset(core);
-    buffer::update_chars(core);
+fn end_of_command_line(core: &mut Core) {
+    if core.buffers[core.main_buffer_index as usize].cursors[1].position.x < core.command.len() as u32 + 1 {
+        core.buffers[core.main_buffer_index as usize].cursors[1].position.x = core.command.len() as u32 + 1;
+        buffer::update_chars(core);
+        core.changed = true;
+    }
+}
 
-    core.changed = true;
+fn start_of_command_line(core: &mut Core) {
+    if core.buffers[core.main_buffer_index as usize].cursors[1].position.x > 1 {
+        core.buffers[core.main_buffer_index as usize].cursors[1].position.x = 1;
+        buffer::update_chars(core);
+        core.changed = true;
+    }
+}
+
+fn delete_command_char_at(core: &mut Core) {
+    if core.command.len() > 0 {
+        core.command.remove(core.buffers[core.main_buffer_index as usize].cursors[1].position.x as usize - 1);
+        buffer::update_chars(core);
+        core.changed = true;
+    }
 }
 
 fn active_command_mode(core: &mut Core) {
     core.command_mode = true;
+    core.buffers[core.main_buffer_index as usize].cursors.resize(
+        1,
+        buffer::Cursor {
+            selection: None,
+            position: buffer::Position {
+                x: 0,
+                y: 0,
+            }
+        }
+    );
+
+    let offset = core.buffers[core.main_buffer_index as usize].offset.y;
+    core.buffers[core.main_buffer_index as usize].cursors.push(
+        buffer::Cursor {
+            selection: None,
+            position: buffer::Position {
+                x: 1,
+                y: core.chars_per_coloumn + offset,
+            }
+        }
+    );
+
     buffer::update_chars(core);
     core.changed = true;
 }
 
 fn deactive_command_mode(core: &mut Core) {
     core.command_mode = false;
+    core.buffers[core.main_buffer_index as usize].cursors.pop();
+}
+
+fn execute_command(core: &mut Core) {
+    buffer::execute_command(core);
     buffer::update_chars(core);
     core.changed = true;
 }
@@ -829,22 +414,31 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
 
             if core.control_modifier {
                 if core.command_mode {
-                    return;
+                    match c {
+                        b'b' => core.last_function = Some(prev_command_char),
+                        b'f' => core.last_function = Some(next_command_char),
+                        b'e' => core.last_function = Some(end_of_command_line),
+                        b'a' => core.last_function = Some(start_of_command_line),
+                        b'd' => core.last_function = Some(delete_command_char_at),
+                        b'k' => core.last_function = Some(delete_to_command_end),
+                        _ => {},
+                    }
+                } else {
+                    match c {
+                        b'p' => core.last_function = Some(prev_line),
+                        b'n' => core.last_function = Some(next_line),
+                        b'b' => core.last_function = Some(prev_char),
+                        b'f' => core.last_function = Some(next_char),
+                        b'e' => core.last_function = Some(end_of_line),
+                        b'a' => core.last_function = Some(start_of_line),
+                        b'd' => core.last_function = Some(delete_char_at),
+                        b'k' => core.last_function = Some(delete_to_line_end),
+                        b's' => core.last_function = Some(save_buffer),
+                        b'v' => core.last_function = Some(page_down),
+                        _ => {},
+                    }
                 }
 
-                match c {
-                    b'p' => core.last_function = Some(prev_line),
-                    b'n' => core.last_function = Some(next_line),
-                    b'b' => core.last_function = Some(prev_char),
-                    b'f' => core.last_function = Some(next_char),
-                    b'e' => core.last_function = Some(end_of_line),
-                    b'a' => core.last_function = Some(start_of_line),
-                    b'd' => core.last_function = Some(delete_char_at),
-                    b'k' => core.last_function = Some(delete_to_line_end),
-                    b's' => core.last_function = Some(save_buffer),
-                    b'v' => core.last_function = Some(page_down),
-                    _ => {},
-                }
             } else if core.alt_modifier {
                 if core.command_mode {
                     return;
@@ -867,6 +461,7 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
         } else if code == ENTER {
             if core.command_mode {
                 deactive_command_mode(core);
+                execute_command(core);
                 return;
             }
 
@@ -874,10 +469,16 @@ unsafe extern "C" fn key(data: *mut std::ffi::c_void, _: *mut wayland::wl_keyboa
         } else if code == BACKSPACE {
             if core.command_mode {
                 core.last_function = Some(delete_prev_command_char);
-                return;
+            } else {
+                core.last_function = Some(delete_prev_char);
             }
-
-            core.last_function = Some(delete_prev_char);
+        } else if code == ESC {
+            if core.command_mode {
+                deactive_command_mode(core);
+                core.command.clear();
+                buffer::update_chars(core);
+                core.changed = true;
+            }
         }
 
         if let Some(f) = core.last_function {
@@ -1006,7 +607,9 @@ pub fn init(
         changed: false,
         command_mode: false,
         command: Vec::new(),
-        buffer: buffer::buffer_from_file(chars_per_row, chars_per_coloumn, "src/renderer/wayland.rs"),
+        buffers: vec![buffer::buffer_from_file(chars_per_row, chars_per_coloumn, "src/renderer/wayland.rs").unwrap()],
+        completion_lines: Vec::new(),
+        main_buffer_index: 0,
         chars_per_row,
         chars_per_coloumn,
         key_rate: std::time::Duration::from_millis(20),
@@ -1103,6 +706,7 @@ pub fn shutdown(core: &Core) {
 
 const ENTER: u8 = 28;
 const BACKSPACE: u8 = 14;
+const ESC: u8 = 1;
 
 fn try_ascci(u: u8) -> Result<[u8; 2], WaylandError> {
     match u {

@@ -6,7 +6,7 @@ pub fn main() {
     let default_width = 1920;
     let default_height = 1080;
     let char_set = (32..127).collect::<Vec<u8>>();
-    let font = font::init("assets/fonts/font.ttf", &char_set, 25).unwrap();
+    let font = font::init("assets/fonts/vic.ttf", &char_set, 30).unwrap();
 
     let mut window = wayland::init("Engine name", default_width, default_height, font.scale, font.x_ratio).unwrap();
     let instance = vulkan::instance(&window.extensions).unwrap();
@@ -28,7 +28,7 @@ pub fn main() {
             &device,
             &mut swapchain,
             &graphics_pipeline,
-            &window.buffer,
+            &window.buffers[window.main_buffer_index as usize],
             window.width,
             window.height
         ) {
